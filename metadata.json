@@ -1,0 +1,8 @@
+{
+  "name": "Crrave Leyton",
+  "description": "Crrave Leyton - Gourmet smash burgers, flame-grilled peri chicken, loaded fries, and thick shakes at 323A Lea Bridge Road, E10 7LA.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
