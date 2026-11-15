@@ -1,7 +1,9 @@
 import React, { useState, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'motion/react';
-import { ArrowLeft, X, Minus, Plus } from 'lucide-react';
+import { X, Minus, Plus } from 'lucide-react';
 import { formatPrice, cn } from '../lib/utils';
+import { ItemImageBanner } from './ItemImageBanner';
 import {
   SOFT_DRINK_CHOICES,
   PERI_PERI_FLAVOURS,
@@ -50,7 +52,7 @@ export const GeneralItemCustomizerModal: React.FC<GeneralItemCustomizerModalProp
   const [selectedLoadedBase, setSelectedLoadedBase] = useState<'Skin On Fries' | 'Potato Tots'>('Skin On Fries');
   const [selectedLoadedMeat, setSelectedLoadedMeat] = useState<'Grilled Chicken' | 'Beef' | 'Crispy Chicken'>('Grilled Chicken');
   const [selectedKidsMain, setSelectedKidsMain] = useState<'4 Nuggets' | 'Mini Cheeseburger' | 'Mini Chicken Burger'>('4 Nuggets');
-  const [selectedKidsDrink, setSelectedKidsDrink] = useState<'Fruit Shoot' | 'Capri Sun' | 'Water'>('Fruit Shoot');
+  const [selectedKidsDrink, setSelectedKidsDrink] = useState<string>('Fruit Shoot');
   const [selectedDrink, setSelectedDrink] = useState<string>('Coca-Cola');
   const [selectedBoxBurger, setSelectedBoxBurger] = useState<string>('Cheeseburger');
 
@@ -108,7 +110,7 @@ export const GeneralItemCustomizerModal: React.FC<GeneralItemCustomizerModalProp
     } else if (type === 'wrap-sauce' || type === 'wrap-doner') {
       if (type === 'wrap-doner') variantParts.push(`Meat: ${selectedDonerMeat}`);
       variantParts.push(`Sauce: ${selectedWrapSauce}`);
-    } else if (type === 'loaded-fries' || type === 'cheese-fries-tots') {
+    } else if (type === 'loaded-fries' || type === 'cheese-fries-tots' || type === 'fries-or-tots') {
       variantParts.push(`Base: ${selectedLoadedBase}`);
       if (type === 'loaded-fries') variantParts.push(`Topping: ${selectedLoadedMeat}`);
     } else if (type === 'kids-meal') {
@@ -129,85 +131,52 @@ export const GeneralItemCustomizerModal: React.FC<GeneralItemCustomizerModalProp
     onClose();
   };
 
-  return (
-    <AnimatePresence>
-      <div className="fixed inset-0 z-[120] flex items-center justify-center p-0 sm:p-4">
-        {/* Backdrop */}
-        <motion.div
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          exit={{ opacity: 0 }}
-          onClick={onClose}
-          className="fixed inset-0 bg-black/80 backdrop-blur-sm"
-        />
+  if (typeof document === 'undefined') return null;
 
-        {/* Modal Card */}
+  return createPortal(
+    <AnimatePresence>
+      <div
+        key="generalitem-portal-root"
+        className="fixed inset-0 z-[200] flex items-center justify-center p-0 sm:p-4 bg-black/85 backdrop-blur-sm overflow-hidden"
+        onClick={onClose}
+      >
         <motion.div
-          initial={{ opacity: 0, scale: 0.96, y: 20 }}
+          key="generalitem-modal-dialog"
+          initial={{ opacity: 0, scale: 0.95, y: 20 }}
           animate={{ opacity: 1, scale: 1, y: 0 }}
-          exit={{ opacity: 0, scale: 0.96, y: 20 }}
+          exit={{ opacity: 0, scale: 0.95, y: 20 }}
           transition={{ duration: 0.2, ease: 'easeOut' }}
-          className="relative w-full max-w-lg bg-[#141414] text-white sm:rounded-2xl shadow-2xl border border-zinc-800/80 flex flex-col max-h-[100dvh] sm:max-h-[90vh] overflow-hidden z-10"
+          onClick={(e) => e.stopPropagation()}
+          className="relative w-full max-w-lg bg-[#000000] text-white sm:rounded-2xl shadow-2xl border border-zinc-800 flex flex-col max-h-[100dvh] sm:max-h-[90vh] overflow-hidden z-10"
         >
-          {/* Header */}
-          <div className="flex items-center justify-between px-5 py-4 border-b border-zinc-800 bg-[#141414] shrink-0">
+          {/* Top Bar - explicitly sticky, highest z-index inside modal */}
+          <div className="sticky top-0 z-30 flex items-center justify-between px-5 py-4 border-b border-zinc-900 bg-[#000000] shrink-0">
+            <div className="w-6" />
             <h1 className="font-semibold text-base sm:text-lg text-white tracking-tight truncate max-w-[280px]">
               {item.name}
             </h1>
             <button
               type="button"
               onClick={onClose}
-              className="p-1 hover:bg-white/10 rounded-full transition-colors text-white cursor-pointer"
-              aria-label="Close"
+              className="p-1 -mr-1 text-white hover:text-gray-300 transition-colors cursor-pointer"
+              aria-label="Close modal"
             >
               <X size={22} />
             </button>
           </div>
 
-          {/* Body */}
-          <div className="flex-1 overflow-y-auto p-5 sm:p-6 space-y-6">
-            {/* If SPECIAL RICE BOX, show only Summary like the end of every dish adding */}
-            {item.category === 'SPECIAL RICE BOX' ? (
-              <div className="space-y-6">
-                <div>
-                  <h3 className="text-xl font-bold text-white tracking-tight">
-                    Summary
-                  </h3>
-                </div>
+          {/* Modal Body - Single Scrollable Area (NO duplicate inner scrollbar!) */}
+          <div className="flex-1 overflow-y-auto p-5 sm:p-6 space-y-5">
+            <ItemImageBanner image={item.image || item.heroImage} name={item.name} />
 
-                <div className="space-y-3 pt-1">
-                  <div className="flex justify-between items-center text-base font-medium">
-                    <span className="text-white font-semibold">{item.name}</span>
-                    <span className="font-semibold text-white">
-                      {formatPrice(unitPrice)}
-                    </span>
-                  </div>
-                  {item.description && (
-                    <p className="text-zinc-400 text-xs sm:text-sm leading-relaxed">
-                      {item.description}
-                    </p>
-                  )}
-                </div>
-              </div>
-            ) : (
-              <>
-                {/* Optional Image */}
-                {item.image && (
-                  <div className="w-full h-44 sm:h-52 rounded-xl overflow-hidden bg-zinc-900 border border-zinc-800/80">
-                    <img
-                      src={item.image}
-                      alt={item.name}
-                      className="w-full h-full object-cover"
-                      onError={(e) => {
-                        (e.target as HTMLImageElement).style.display = 'none';
-                      }}
-                    />
-                  </div>
-                )}
-
-                {/* Title & Description */}
+            {/* If SPECIAL RICE BOX, Masala Fries, Coleslaw, or Simple items */}
+            {item.category === 'SPECIAL RICE BOX' ||
+            item.name.toLowerCase().includes('masala fries') ||
+            item.name.toLowerCase().includes('coleslaw') ||
+            !type ? (
+              <div className="space-y-4">
                 <div>
-                  <h2 className="text-2xl font-bold text-white tracking-tight">
+                  <h2 className="text-xl sm:text-2xl font-bold text-white tracking-tight">
                     {item.name}
                   </h2>
                   {item.description && (
@@ -216,316 +185,355 @@ export const GeneralItemCustomizerModal: React.FC<GeneralItemCustomizerModalProp
                     </p>
                   )}
                 </div>
-              </>
-            )}
 
-            {/* Dynamic Options based on customizationType */}
-            {/* 1. Shake / Mojito Size */}
-            {(type === 'shake-size' || type === 'mojito-size') && (
-              <div className="space-y-3 pt-1">
-                <h3 className="text-sm font-bold text-white uppercase tracking-wider">
-                  Choose Size
-                </h3>
-                <div className="grid grid-cols-2 gap-3">
-                  <label
-                    onClick={() => setSelectedSize('Regular')}
-                    className={cn(
-                      'flex items-center justify-between p-4 rounded-xl border transition-all cursor-pointer',
-                      selectedSize === 'Regular'
-                        ? 'bg-zinc-800/80 border-[#f5a623]'
-                        : 'bg-zinc-900/50 border-zinc-800 hover:border-zinc-700'
-                    )}
-                  >
-                    <span className="font-semibold text-sm text-white">Regular</span>
-                    <span className="font-bold text-sm text-zinc-300">£3.95</span>
-                  </label>
-                  <label
-                    onClick={() => setSelectedSize('Large')}
-                    className={cn(
-                      'flex items-center justify-between p-4 rounded-xl border transition-all cursor-pointer',
-                      selectedSize === 'Large'
-                        ? 'bg-zinc-800/80 border-[#f5a623]'
-                        : 'bg-zinc-900/50 border-zinc-800 hover:border-zinc-700'
-                    )}
-                  >
-                    <span className="font-semibold text-sm text-white">Large</span>
-                    <span className="font-bold text-sm text-zinc-300">£4.50</span>
-                  </label>
+                <div className="bg-[#262626] rounded-xl p-4 space-y-1.5 text-xs sm:text-sm mt-4">
+                  <h4 className="text-sm sm:text-base font-semibold text-white">Summary</h4>
+                  <div className="flex justify-between items-center font-medium">
+                    <span className="text-white">{item.name}</span>
+                    <span className="font-semibold text-white">
+                      {formatPrice(unitPrice)}
+                    </span>
+                  </div>
                 </div>
               </div>
-            )}
-
-            {/* 2. Wings / Strips / Rice Flavours */}
-            {(type === 'wings-flavour' ||
-              type === 'strips-flavour' ||
-              type === 'peri-peri-rice') && (
-              <div className="space-y-3 pt-1">
-                <h3 className="text-sm font-bold text-white uppercase tracking-wider">
-                  Choose Flavour
-                </h3>
-                <div className="grid grid-cols-2 gap-2">
-                  {(type === 'wings-flavour'
-                    ? WINGS_FLAVOURS
-                    : type === 'strips-flavour'
-                    ? STRIPS_FLAVOURS
-                    : PERI_PERI_FLAVOURS
-                  ).map((flv) => (
-                    <button
-                      key={flv}
-                      type="button"
-                      onClick={() => setSelectedFlavour(flv)}
-                      className={cn(
-                        'py-3 px-4 rounded-xl text-xs font-bold border transition-all cursor-pointer text-center',
-                        selectedFlavour === flv
-                          ? 'bg-[#f5a623] text-black border-[#f5a623]'
-                          : 'bg-zinc-900/50 border-zinc-800 text-zinc-300 hover:bg-zinc-800'
-                      )}
-                    >
-                      {flv}
-                    </button>
-                  ))}
+            ) : (
+              <div className="space-y-5">
+                <div>
+                  <h2 className="text-xl sm:text-2xl font-bold text-white tracking-tight">
+                    {item.name}
+                  </h2>
+                  {item.description && (
+                    <p className="text-zinc-400 text-sm mt-1.5 leading-relaxed">
+                      {item.description}
+                    </p>
+                  )}
                 </div>
-              </div>
-            )}
 
-            {/* Side Upgrade Option for Wings/Strips/Sandwich */}
-            {(type === 'wings-flavour' ||
-              type === 'strips-flavour' ||
-              type === 'toasted-sandwich') && (
-              <div className="space-y-3 pt-1 border-t border-zinc-800/80">
-                <h3 className="text-sm font-bold text-white uppercase tracking-wider">
-                  Add Side (+£2.00)
-                </h3>
-                <div className="grid grid-cols-3 gap-2">
-                  {[
-                    { id: 'none', label: 'No Side' },
-                    { id: 'fries', label: 'Skin-On Fries' },
-                    { id: 'rice', label: 'Spicy Rice' },
-                  ].map((side) => (
-                    <button
-                      key={side.id}
-                      type="button"
-                      onClick={() => setSelectedSideUpgrade(side.id as any)}
-                      className={cn(
-                        'py-3 px-3 rounded-xl text-xs font-bold border transition-all cursor-pointer text-center',
-                        selectedSideUpgrade === side.id
-                          ? 'bg-[#f5a623] text-black border-[#f5a623]'
-                          : 'bg-zinc-900/50 border-zinc-800 text-zinc-300 hover:bg-zinc-800'
-                      )}
-                    >
-                      {side.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {/* 3. Wrap Options */}
-            {(type === 'wrap-sauce' || type === 'wrap-doner') && (
-              <div className="space-y-4 pt-1">
-                {type === 'wrap-doner' && (
-                  <div className="space-y-2">
-                    <h3 className="text-sm font-bold text-white uppercase tracking-wider">
-                      Select Meat
+                {/* Shake / Mojito Size */}
+                {(type === 'shake-size' || type === 'mojito-size') && (
+                  <div className="space-y-3 pt-1">
+                    <h3 className="text-base sm:text-lg font-bold text-white">
+                      Choose Size – Choose one
                     </h3>
-                    <div className="grid grid-cols-2 gap-2">
-                      {['Chicken Doner', 'Meat Doner'].map((meat) => (
-                        <button
-                          key={meat}
-                          type="button"
-                          onClick={() => setSelectedDonerMeat(meat as any)}
-                          className={cn(
-                            'py-3 px-4 rounded-xl text-xs font-bold border transition-all cursor-pointer text-center',
-                            selectedDonerMeat === meat
-                              ? 'bg-[#f5a623] text-black border-[#f5a623]'
-                              : 'bg-zinc-900/50 border-zinc-800 text-zinc-300 hover:bg-zinc-800'
-                          )}
-                        >
-                          {meat}
-                        </button>
-                      ))}
+                    <div className="space-y-2.5">
+                      {(['Regular', 'Large'] as const).map((size, sIdx) => {
+                        const price = size === 'Large' ? 4.5 : 3.95;
+                        const isSelected = selectedSize === size;
+                        return (
+                          <label
+                            key={`${size}-${sIdx}`}
+                            onClick={() => setSelectedSize(size)}
+                            className={cn(
+                              'flex items-center justify-between p-3.5 rounded-xl border transition-all cursor-pointer select-none',
+                              isSelected
+                                ? 'bg-zinc-900 border-[#f5a623]'
+                                : 'bg-black border-zinc-800/80 hover:border-zinc-700 hover:bg-zinc-900/50'
+                            )}
+                          >
+                            <div className="flex items-center gap-3">
+                              <div
+                                className={cn(
+                                  'w-5 h-5 rounded-full border-2 flex items-center justify-center shrink-0 transition-all',
+                                  isSelected
+                                    ? 'border-[#f5a623] bg-[#f5a623]'
+                                    : 'border-zinc-500 bg-transparent'
+                                )}
+                              >
+                                {isSelected && (
+                                  <div className="w-2 h-2 rounded-full bg-black" />
+                                )}
+                              </div>
+                              <span className="font-normal text-sm sm:text-base text-white">
+                                {size}
+                              </span>
+                            </div>
+                            <span className="font-semibold text-sm text-zinc-300">
+                              {formatPrice(price)}
+                            </span>
+                          </label>
+                        );
+                      })}
                     </div>
                   </div>
                 )}
 
-                <div className="space-y-2">
-                  <h3 className="text-sm font-bold text-white uppercase tracking-wider">
-                    Select Sauce
-                  </h3>
-                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-                    {WRAP_SAUCE_OPTIONS.map((sauce) => (
-                      <button
-                        key={sauce}
-                        type="button"
-                        onClick={() => setSelectedWrapSauce(sauce)}
-                        className={cn(
-                          'py-2.5 px-3 rounded-xl text-xs font-bold border transition-all cursor-pointer text-center',
-                          selectedWrapSauce === sauce
-                            ? 'bg-[#f5a623] text-black border-[#f5a623]'
-                            : 'bg-zinc-900/50 border-zinc-800 text-zinc-300 hover:bg-zinc-800'
-                        )}
-                      >
-                        {sauce}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* 4. Loaded Fries / Tots */}
-            {(type === 'loaded-fries' || type === 'cheese-fries-tots') && (
-              <div className="space-y-4 pt-1">
-                <div className="space-y-2">
-                  <h3 className="text-sm font-bold text-white uppercase tracking-wider">
-                    Select Base
-                  </h3>
-                  <div className="grid grid-cols-2 gap-2">
-                    {['Skin On Fries', 'Potato Tots'].map((base) => (
-                      <button
-                        key={base}
-                        type="button"
-                        onClick={() => setSelectedLoadedBase(base as any)}
-                        className={cn(
-                          'py-3 px-4 rounded-xl text-xs font-bold border transition-all cursor-pointer text-center',
-                          selectedLoadedBase === base
-                            ? 'bg-[#f5a623] text-black border-[#f5a623]'
-                            : 'bg-zinc-900/50 border-zinc-800 text-zinc-300 hover:bg-zinc-800'
-                        )}
-                      >
-                        {base}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                {type === 'loaded-fries' && (
-                  <div className="space-y-2">
-                    <h3 className="text-sm font-bold text-white uppercase tracking-wider">
-                      Select Topping
+                {/* Peri Peri Rice Flavour */}
+                {type === 'peri-peri-rice' && (
+                  <div className="space-y-3 pt-1">
+                    <h3 className="text-base sm:text-lg font-bold text-white">
+                      Choose Flavour – Choose one
                     </h3>
-                    <div className="grid grid-cols-3 gap-2">
-                      {['Grilled Chicken', 'Beef', 'Crispy Chicken'].map((meat) => (
-                        <button
-                          key={meat}
-                          type="button"
-                          onClick={() => setSelectedLoadedMeat(meat as any)}
-                          className={cn(
-                            'py-3 px-2 rounded-xl text-xs font-bold border transition-all cursor-pointer text-center',
-                            selectedLoadedMeat === meat
-                              ? 'bg-[#f5a623] text-black border-[#f5a623]'
-                              : 'bg-zinc-900/50 border-zinc-800 text-zinc-300 hover:bg-zinc-800'
-                          )}
-                        >
-                          {meat}
-                        </button>
-                      ))}
+                    <div className="space-y-2.5">
+                      {PERI_PERI_FLAVOURS.map((flavour, fIdx) => {
+                        const isSelected = selectedFlavour === flavour;
+                        return (
+                          <label
+                            key={`${flavour}-${fIdx}`}
+                            onClick={() => setSelectedFlavour(flavour)}
+                            className={cn(
+                              'flex items-center justify-between p-3.5 rounded-xl border transition-all cursor-pointer select-none',
+                              isSelected
+                                ? 'bg-zinc-900 border-[#f5a623]'
+                                : 'bg-black border-zinc-800/80 hover:border-zinc-700 hover:bg-zinc-900/50'
+                            )}
+                          >
+                            <div className="flex items-center gap-3">
+                              <div
+                                className={cn(
+                                  'w-5 h-5 rounded-full border-2 flex items-center justify-center shrink-0 transition-all',
+                                  isSelected
+                                    ? 'border-[#f5a623] bg-[#f5a623]'
+                                    : 'border-zinc-500 bg-transparent'
+                                )}
+                              >
+                                {isSelected && (
+                                  <div className="w-2 h-2 rounded-full bg-black" />
+                                )}
+                              </div>
+                              <span className="font-normal text-sm sm:text-base text-white">
+                                {flavour}
+                              </span>
+                            </div>
+                          </label>
+                        );
+                      })}
                     </div>
                   </div>
                 )}
-              </div>
-            )}
 
-            {/* 5. Kids Meal */}
-            {type === 'kids-meal' && (
-              <div className="space-y-4 pt-1">
-                <div className="space-y-2">
-                  <h3 className="text-sm font-bold text-white uppercase tracking-wider">
-                    Select Main
-                  </h3>
-                  <div className="grid grid-cols-3 gap-2">
-                    {['4 Nuggets', 'Mini Cheeseburger', 'Mini Chicken Burger'].map((main) => (
-                      <button
-                        key={main}
-                        type="button"
-                        onClick={() => setSelectedKidsMain(main as any)}
-                        className={cn(
-                          'py-3 px-2 rounded-xl text-xs font-bold border transition-all cursor-pointer text-center',
-                          selectedKidsMain === main
-                            ? 'bg-[#f5a623] text-black border-[#f5a623]'
-                            : 'bg-zinc-900/50 border-zinc-800 text-zinc-300 hover:bg-zinc-800'
-                        )}
-                      >
-                        {main}
-                      </button>
-                    ))}
+                {/* Wings / Strips Flavour & Side */}
+                {(type === 'wings-flavour' || type === 'strips-flavour') && (
+                  <>
+                    <div className="space-y-3 pt-1">
+                      <h3 className="text-base sm:text-lg font-bold text-white">
+                        Choose Flavour – Choose one
+                      </h3>
+                      <div className="space-y-2.5">
+                        {(type === 'wings-flavour' ? WINGS_FLAVOURS : STRIPS_FLAVOURS).map((flavour, fIdx) => {
+                          const isSelected = selectedFlavour === flavour;
+                          return (
+                            <label
+                              key={`${flavour}-${fIdx}`}
+                              onClick={() => setSelectedFlavour(flavour)}
+                              className={cn(
+                                'flex items-center justify-between p-3.5 rounded-xl border transition-all cursor-pointer select-none',
+                                isSelected
+                                  ? 'bg-zinc-900 border-[#f5a623]'
+                                  : 'bg-black border-zinc-800/80 hover:border-zinc-700 hover:bg-zinc-900/50'
+                              )}
+                            >
+                              <div className="flex items-center gap-3">
+                                <div
+                                  className={cn(
+                                    'w-5 h-5 rounded-full border-2 flex items-center justify-center shrink-0 transition-all',
+                                    isSelected
+                                      ? 'border-[#f5a623] bg-[#f5a623]'
+                                      : 'border-zinc-500 bg-transparent'
+                                  )}
+                                >
+                                  {isSelected && (
+                                    <div className="w-2 h-2 rounded-full bg-black" />
+                                  )}
+                                </div>
+                                <span className="font-normal text-sm sm:text-base text-white">
+                                  {flavour}
+                                </span>
+                              </div>
+                            </label>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    <div className="space-y-3 pt-1">
+                      <h3 className="text-base sm:text-lg font-bold text-white">
+                        Add a Side
+                      </h3>
+                      <div className="space-y-2.5">
+                        {[
+                          { id: 'none', label: 'No Side', extra: 0 },
+                          { id: 'rice', label: 'With Spicy Rice', extra: 2.0 },
+                          { id: 'fries', label: 'With Skin-On Fries', extra: 2.0 },
+                        ].map((opt, oIdx) => {
+                          const isSelected = selectedSideUpgrade === opt.id;
+                          return (
+                            <label
+                              key={`${opt.id}-${oIdx}`}
+                              onClick={() => setSelectedSideUpgrade(opt.id as any)}
+                              className={cn(
+                                'flex items-center justify-between p-3.5 rounded-xl border transition-all cursor-pointer select-none',
+                                isSelected
+                                  ? 'bg-zinc-900 border-[#f5a623]'
+                                  : 'bg-black border-zinc-800/80 hover:border-zinc-700 hover:bg-zinc-900/50'
+                              )}
+                            >
+                              <div className="flex items-center gap-3">
+                                <div
+                                  className={cn(
+                                    'w-5 h-5 rounded-full border-2 flex items-center justify-center shrink-0 transition-all',
+                                    isSelected
+                                      ? 'border-[#f5a623] bg-[#f5a623]'
+                                      : 'border-zinc-500 bg-transparent'
+                                  )}
+                                >
+                                  {isSelected && (
+                                    <div className="w-2 h-2 rounded-full bg-black" />
+                                  )}
+                                </div>
+                                <span className="font-normal text-sm sm:text-base text-white">
+                                  {opt.label}
+                                </span>
+                              </div>
+                              {opt.extra > 0 && (
+                                <span className="font-semibold text-sm text-zinc-300">
+                                  +{formatPrice(opt.extra)}
+                                </span>
+                              )}
+                            </label>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  </>
+                )}
+
+                {/* Kids Meal */}
+                {type === 'kids-meal' && (
+                  <>
+                    <div className="space-y-3 pt-1">
+                      <h3 className="text-base sm:text-lg font-bold text-white">
+                        Choose Main – Choose one
+                      </h3>
+                      <div className="space-y-2.5">
+                        {(['4 Nuggets', 'Mini Cheeseburger', 'Mini Chicken Burger'] as const).map((main, mIdx) => {
+                          const isSelected = selectedKidsMain === main;
+                          return (
+                            <label
+                              key={`${main}-${mIdx}`}
+                              onClick={() => setSelectedKidsMain(main)}
+                              className={cn(
+                                'flex items-center justify-between p-3.5 rounded-xl border transition-all cursor-pointer select-none',
+                                isSelected
+                                  ? 'bg-zinc-900 border-[#f5a623]'
+                                  : 'bg-black border-zinc-800/80 hover:border-zinc-700 hover:bg-zinc-900/50'
+                              )}
+                            >
+                              <div className="flex items-center gap-3">
+                                <div
+                                  className={cn(
+                                    'w-5 h-5 rounded-full border-2 flex items-center justify-center shrink-0 transition-all',
+                                    isSelected
+                                      ? 'border-[#f5a623] bg-[#f5a623]'
+                                      : 'border-zinc-500 bg-transparent'
+                                  )}
+                                >
+                                  {isSelected && (
+                                    <div className="w-2 h-2 rounded-full bg-black" />
+                                  )}
+                                </div>
+                                <span className="font-normal text-sm sm:text-base text-white">
+                                  {main}
+                                </span>
+                              </div>
+                            </label>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    <div className="space-y-3 pt-1">
+                      <h3 className="text-base sm:text-lg font-bold text-white">
+                        Choose Drink – Choose one
+                      </h3>
+                      <div className="space-y-2.5">
+                        {['Fruit Shoot'].map((drink, dIdx) => {
+                          const isSelected = selectedKidsDrink === drink;
+                          return (
+                            <label
+                              key={`${drink}-${dIdx}`}
+                              onClick={() => setSelectedKidsDrink(drink)}
+                              className={cn(
+                                'flex items-center justify-between p-3.5 rounded-xl border transition-all cursor-pointer select-none',
+                                isSelected
+                                  ? 'bg-zinc-900 border-[#f5a623]'
+                                  : 'bg-black border-zinc-800/80 hover:border-zinc-700 hover:bg-zinc-900/50'
+                              )}
+                            >
+                              <div className="flex items-center gap-3">
+                                <div
+                                  className={cn(
+                                    'w-5 h-5 rounded-full border-2 flex items-center justify-center shrink-0 transition-all',
+                                    isSelected
+                                      ? 'border-[#f5a623] bg-[#f5a623]'
+                                      : 'border-zinc-500 bg-transparent'
+                                  )}
+                                >
+                                  {isSelected && (
+                                    <div className="w-2 h-2 rounded-full bg-black" />
+                                  )}
+                                </div>
+                                <span className="font-normal text-sm sm:text-base text-white">
+                                  {drink}
+                                </span>
+                              </div>
+                            </label>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  </>
+                )}
+
+                <div className="bg-[#262626] rounded-xl p-4 space-y-1.5 text-xs sm:text-sm mt-4">
+                  <h4 className="text-sm sm:text-base font-semibold text-white">Summary</h4>
+                  <div className="flex justify-between items-center font-medium">
+                    <span className="text-white">{item.name}</span>
+                    <span className="font-semibold text-white">
+                      {formatPrice(unitPrice)}
+                    </span>
                   </div>
-                </div>
-
-                <div className="space-y-2">
-                  <h3 className="text-sm font-bold text-white uppercase tracking-wider">
-                    Select Drink
-                  </h3>
-                  <div className="grid grid-cols-3 gap-2">
-                    {['Fruit Shoot', 'Capri Sun', 'Water'].map((drink) => (
-                      <button
-                        key={drink}
-                        type="button"
-                        onClick={() => setSelectedKidsDrink(drink as any)}
-                        className={cn(
-                          'py-3 px-2 rounded-xl text-xs font-bold border transition-all cursor-pointer text-center',
-                          selectedKidsDrink === drink
-                            ? 'bg-[#f5a623] text-black border-[#f5a623]'
-                            : 'bg-zinc-900/50 border-zinc-800 text-zinc-300 hover:bg-zinc-800'
-                        )}
-                      >
-                        {drink}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* Summary Review Box for items with options */}
-            {item.category !== 'SPECIAL RICE BOX' && (
-              <div className="bg-zinc-900/60 border border-zinc-800 rounded-xl p-4 space-y-2">
-                <div className="flex justify-between items-center text-sm font-medium">
-                  <span className="text-white font-semibold">{item.name}</span>
-                  <span className="font-bold text-white">{formatPrice(unitPrice)}</span>
                 </div>
               </div>
             )}
           </div>
 
-          {/* Sticky Bottom Bar */}
-          <div className="border-t border-zinc-800 bg-[#141414] px-5 py-4 shrink-0 flex items-center gap-3">
-            {/* Quantity Pill */}
-            <div className="flex items-center gap-2 bg-zinc-800 border border-zinc-700/80 px-2 py-1.5 rounded-lg shrink-0">
+          {/* Bottom Bar: Stepper & Add to Basket */}
+          <div className="border-t border-zinc-900 bg-[#000000] px-5 py-4 shrink-0 flex items-center gap-3">
+            <div className="flex items-center bg-[#2b2b2b] rounded-xl px-2 py-1.5 shrink-0">
               <button
                 type="button"
                 onClick={() => setQuantity((q) => Math.max(1, q - 1))}
+                className="w-8 h-8 flex items-center justify-center text-white hover:text-gray-300 disabled:opacity-40 cursor-pointer"
                 disabled={quantity <= 1}
-                className="w-8 h-8 rounded-full bg-zinc-700/80 hover:bg-zinc-600 disabled:opacity-40 flex items-center justify-center text-white transition-colors cursor-pointer"
                 aria-label="Decrease quantity"
               >
-                <Minus size={14} />
+                <Minus size={16} />
               </button>
-              <span className="font-bold text-base text-white px-2 min-w-[20px] text-center">
+              <span className="w-8 text-center font-bold text-sm text-white">
                 {quantity}
               </span>
               <button
                 type="button"
                 onClick={() => setQuantity((q) => q + 1)}
-                className="w-8 h-8 rounded-full bg-zinc-700/80 hover:bg-zinc-600 flex items-center justify-center text-white transition-colors cursor-pointer"
+                className="w-8 h-8 flex items-center justify-center text-white hover:text-gray-300 cursor-pointer"
                 aria-label="Increase quantity"
               >
-                <Plus size={14} />
+                <Plus size={16} />
               </button>
             </div>
 
-            {/* Add to Basket Button */}
             <button
               type="button"
               onClick={handleFinishAndAdd}
-              className="flex-1 py-3.5 px-5 rounded-lg bg-[#f5a623] hover:bg-[#e0961b] text-black font-black text-base transition-transform active:scale-98 shadow-lg flex items-center justify-between cursor-pointer"
+              className="flex-1 py-3.5 bg-[#f5a623] hover:bg-[#e09612] text-black font-bold rounded-xl text-sm transition-all cursor-pointer flex items-center justify-between px-5 active:scale-[0.98]"
             >
               <span>Add to basket</span>
-              <span className="font-black">{formatPrice(grandTotal)}</span>
+              <span className="font-extrabold">{formatPrice(grandTotal)}</span>
             </button>
           </div>
         </motion.div>
       </div>
-    </AnimatePresence>
+    </AnimatePresence>,
+    document.body
   );
 };

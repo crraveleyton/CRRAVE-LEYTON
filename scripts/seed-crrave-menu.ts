@@ -89,6 +89,8 @@ async function seed() {
         order: item.order,
         available: item.available,
         customizationType: item.customizationType || null,
+        image: null,
+        heroImage: null,
         createdAt: new Date().toISOString(),
       });
     }

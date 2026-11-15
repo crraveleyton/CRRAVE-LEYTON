@@ -86,7 +86,15 @@ export const sendEmail = async (params: SendEmailParams): Promise<SendEmailResul
       }),
     });
 
-    const data = await apiRes.json().catch(() => ({}));
+    const contentType = apiRes.headers.get("content-type") || "";
+    let data: any = {};
+    if (contentType.includes("application/json")) {
+      data = await apiRes.json().catch(() => ({}));
+    } else {
+      // In SPA environments (e.g. Vite dev or Netlify rewrite), HTML may be returned
+      console.warn("[EMAIL DISPATCH] Endpoint returned non-JSON response, routing to client fallback");
+      data = { fallback: "emailjs" };
+    }
 
     if (apiRes.ok && data.success) {
       if (data.alreadySent) {
@@ -103,17 +111,9 @@ export const sendEmail = async (params: SendEmailParams): Promise<SendEmailResul
       };
     }
 
-    // If server specifically returned fallback: 'emailjs' (providers unconfigured on server)
-    if (apiRes.status === 503 && data.fallback === "emailjs") {
-      console.warn("[EMAIL DISPATCH] Server providers unconfigured, proceeding to EmailJS rollback fallback");
-    } else {
-      // Server is configured with Worker or SMTP, but the provider returned an error
-      console.error("[EMAIL ERROR] Server email dispatch failed:", data.error || `HTTP ${apiRes.status}`);
-      return {
-        success: false,
-        error: data.error || `HTTP ${apiRes.status}`,
-        provider: data.provider,
-      };
+    // If server specifically returned fallback: 'emailjs', 503, or unconfigured
+    if (apiRes.status === 503 || data.fallback === "emailjs" || !data.success) {
+      console.info("[EMAIL DISPATCH] Server providers unconfigured or returned fallback, checking client EmailJS fallback");
     }
   } catch (apiErr) {
     console.warn("[EMAIL API] Server endpoint unreachable, checking client EmailJS fallback:", apiErr);
@@ -128,7 +128,7 @@ export const sendEmail = async (params: SendEmailParams): Promise<SendEmailResul
   const publicKey = import.meta.env.VITE_EMAILJS_PUBLIC_KEY;
 
   if (!serviceId || !templateId || !publicKey) {
-    console.warn("EmailJS configuration missing and server dispatch was not available.");
+    console.info("[EMAIL NOTICE] Email delivery unconfigured (Worker secret/SMTP and EmailJS keys not provided). Order processing continues.");
     return { success: false, error: "No email dispatch method configured" };
   }
 

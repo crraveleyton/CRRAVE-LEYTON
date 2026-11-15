@@ -1,8 +1,12 @@
 {
-  "name": "react-example",
+  "name": "crrave-leyton",
+  "productName": "Crrave Leyton",
   "private": true,
-  "version": "0.0.0",
+  "version": "1.0.0",
+  "description": "Crrave Leyton",
+  "author": "Biznext Technology Ltd",
   "type": "module",
+  "main": "electron/main.cjs",
   "scripts": {
     "dev": "tsx server.ts",
     "start": "tsx server.ts",
@@ -11,7 +15,10 @@
     "clean": "rm -rf dist",
     "lint": "tsc --noEmit",
     "cap:sync": "cap sync",
-    "cap:open:android": "cap open android"
+    "cap:open:android": "cap open android",
+    "electron:dev": "electron .",
+    "dist": "electron-builder --win",
+    "dist:all": "electron-builder"
   },
   "dependencies": {
     "@capacitor/android": "^8.3.3",
@@ -23,7 +30,14 @@
     "@stripe/react-stripe-js": "^6.2.0",
     "@stripe/stripe-js": "^9.3.1",
     "@tailwindcss/vite": "^4.1.14",
+    "@types/express": "^4.17.25",
+    "@types/node": "^22.19.15",
+    "@types/nodemailer": "^8.0.0",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@types/web-bluetooth": "^0.0.21",
     "@vitejs/plugin-react": "^5.0.4",
+    "autoprefixer": "^10.4.21",
     "clsx": "^2.1.1",
     "dotenv": "^17.2.3",
     "escpos": "^3.0.0-alpha.6",
@@ -39,16 +53,53 @@
     "sonner": "^2.0.7",
     "stripe": "^17.0.0",
     "tailwind-merge": "^3.5.0",
-    "tsx": "^4.21.0"
-  },
-  "devDependencies": {
-    "@types/express": "^4.17.25",
-    "@types/node": "^22.19.15",
-    "@types/nodemailer": "^8.0.0",
-    "@types/web-bluetooth": "^0.0.21",
-    "autoprefixer": "^10.4.21",
     "tailwindcss": "^4.1.14",
+    "tsx": "^4.21.0",
     "typescript": "~5.8.2",
     "vite": "^6.4.1"
+  },
+  "devDependencies": {
+    "electron": "^45.3.2",
+    "electron-builder": "^26.18.0"
+  },
+  "build": {
+    "appId": "com.biznexttechnology.crraveleyton",
+    "productName": "Crrave Leyton",
+    "copyright": "Copyright © 2026 Biznext Technology Ltd",
+    "directories": {
+      "output": "release",
+      "buildResources": "electron/resources"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*"
+    ],
+    "asar": true,
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "electron/resources/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Crrave Leyton",
+      "uninstallDisplayName": "Crrave Leyton"
+    }
   }
 }

@@ -13,6 +13,10 @@ import { MunchBoxModal } from './MunchBoxModal';
 import { ToastedSandwichModal } from './ToastedSandwichModal';
 import { WrapModal } from './WrapModal';
 import { CrraveBoxModal } from './CrraveBoxModal';
+import { FamilyPlatterModal } from './FamilyPlatterModal';
+import { LoadedFriesModal } from './LoadedFriesModal';
+import { FriesOrTotsModal } from './FriesOrTotsModal';
+import { ItemImageBanner } from './ItemImageBanner';
 import {
   CRRAVE_CATEGORIES,
   CRRAVE_MENU_ITEMS,
@@ -40,7 +44,7 @@ interface MenuItem {
 
 interface MenuProps {
   user: UserProfile | null;
-  addToCart: (item: { id: string; name: string; price: number; variant?: string }) => void;
+  addToCart: (item: { id: string; name: string; price: number; variant?: string; quantity?: number }) => void;
   editDish?: (id: string) => void;
 }
 
@@ -55,11 +59,7 @@ export default function Menu({ user, addToCart, editDish }: MenuProps) {
   const [searchQuery, setSearchQuery] = useState('');
   const [discountSettings, setDiscountSettings] = useState<any>(null);
   const [isCurrentlyOpen, setIsCurrentlyOpen] = useState(isOpenNow());
-  const [expandedCategories, setExpandedCategories] = useState<{ [key: string]: boolean }>({
-    'SMASH BURGERS': true,
-    'CHICKEN BURGERS': true,
-    'GRILLS & PERI PERI': true,
-  });
+  const [expandedCategories, setExpandedCategories] = useState<{ [key: string]: boolean }>({});
   const [showBackToTop, setShowBackToTop] = useState(false);
 
   // Dedicated Smash & Chicken Burger Customizer state
@@ -74,6 +74,12 @@ export default function Menu({ user, addToCart, editDish }: MenuProps) {
   const [wrapModalItem, setWrapModalItem] = useState<MenuItem | null>(null);
   // Dedicated Crrave Box Customizer state (exact setup from screenshots)
   const [crraveBoxModalItem, setCrraveBoxModalItem] = useState<MenuItem | null>(null);
+  // Dedicated Family Platter Customizer state (exact 11-step setup from captures)
+  const [familyPlatterModalItem, setFamilyPlatterModalItem] = useState<MenuItem | null>(null);
+  // Dedicated Loaded Fries/Tots Customizer state (exact setup from screenshots)
+  const [loadedFriesModalItem, setLoadedFriesModalItem] = useState<MenuItem | null>(null);
+  // Dedicated Fries or Tots Customizer state (exact setup from screenshot 5)
+  const [friesOrTotsModalItem, setFriesOrTotsModalItem] = useState<MenuItem | null>(null);
   // Dedicated General Items Customizer state (for all other categories)
   const [generalModalItem, setGeneralModalItem] = useState<MenuItem | null>(null);
 
@@ -184,14 +190,13 @@ export default function Menu({ user, addToCart, editDish }: MenuProps) {
     variant: string;
     quantity: number;
   }) => {
-    for (let i = 0; i < customized.quantity; i++) {
-      addToCart({
-        id: `${customized.id}_${Date.now()}_${i}`,
-        name: customized.name,
-        price: customized.price,
-        variant: customized.variant,
-      });
-    }
+    addToCart({
+      id: customized.id,
+      name: customized.name,
+      price: customized.price,
+      variant: customized.variant,
+      quantity: customized.quantity,
+    });
     toast.success(`Added ${customized.quantity}x ${customized.name} to basket!`);
   };
 
@@ -202,14 +207,13 @@ export default function Menu({ user, addToCart, editDish }: MenuProps) {
     variant: string;
     quantity: number;
   }) => {
-    for (let i = 0; i < customized.quantity; i++) {
-      addToCart({
-        id: `${customized.id}_${Date.now()}_${i}`,
-        name: customized.name,
-        price: customized.price,
-        variant: customized.variant,
-      });
-    }
+    addToCart({
+      id: customized.id,
+      name: customized.name,
+      price: customized.price,
+      variant: customized.variant,
+      quantity: customized.quantity,
+    });
     toast.success(`Added ${customized.quantity}x ${customized.name} to basket!`);
   };
 
@@ -220,14 +224,13 @@ export default function Menu({ user, addToCart, editDish }: MenuProps) {
     variant: string;
     quantity: number;
   }) => {
-    for (let i = 0; i < customized.quantity; i++) {
-      addToCart({
-        id: `${customized.id}_${Date.now()}_${i}`,
-        name: customized.name,
-        price: customized.price,
-        variant: customized.variant,
-      });
-    }
+    addToCart({
+      id: customized.id,
+      name: customized.name,
+      price: customized.price,
+      variant: customized.variant,
+      quantity: customized.quantity,
+    });
     toast.success(`Added ${customized.quantity}x ${customized.name} to basket!`);
   };
 
@@ -238,14 +241,13 @@ export default function Menu({ user, addToCart, editDish }: MenuProps) {
     variant: string;
     quantity: number;
   }) => {
-    for (let i = 0; i < customized.quantity; i++) {
-      addToCart({
-        id: `${customized.id}_${Date.now()}_${i}`,
-        name: customized.name,
-        price: customized.price,
-        variant: customized.variant,
-      });
-    }
+    addToCart({
+      id: customized.id,
+      name: customized.name,
+      price: customized.price,
+      variant: customized.variant,
+      quantity: customized.quantity,
+    });
     toast.success(`Added ${customized.quantity}x ${customized.name} to basket!`);
   };
 
@@ -256,14 +258,13 @@ export default function Menu({ user, addToCart, editDish }: MenuProps) {
     variant: string;
     quantity: number;
   }) => {
-    for (let i = 0; i < customized.quantity; i++) {
-      addToCart({
-        id: `${customized.id}_${Date.now()}_${i}`,
-        name: customized.name,
-        price: customized.price,
-        variant: customized.variant,
-      });
-    }
+    addToCart({
+      id: customized.id,
+      name: customized.name,
+      price: customized.price,
+      variant: customized.variant,
+      quantity: customized.quantity,
+    });
     toast.success(`Added ${customized.quantity}x ${customized.name} to basket!`);
   };
 
@@ -274,14 +275,64 @@ export default function Menu({ user, addToCart, editDish }: MenuProps) {
     variant: string;
     quantity: number;
   }) => {
-    for (let i = 0; i < customized.quantity; i++) {
-      addToCart({
-        id: `${customized.id}_${Date.now()}_${i}`,
-        name: customized.name,
-        price: customized.price,
-        variant: customized.variant,
-      });
-    }
+    addToCart({
+      id: customized.id,
+      name: customized.name,
+      price: customized.price,
+      variant: customized.variant,
+      quantity: customized.quantity,
+    });
+    toast.success(`Added ${customized.quantity}x ${customized.name} to basket!`);
+  };
+
+  const handleFamilyPlatterAddToCart = (customized: {
+    id: string;
+    name: string;
+    price: number;
+    variant: string;
+    quantity: number;
+  }) => {
+    addToCart({
+      id: customized.id,
+      name: customized.name,
+      price: customized.price,
+      variant: customized.variant,
+      quantity: customized.quantity,
+    });
+    toast.success(`Added ${customized.quantity}x ${customized.name} to basket!`);
+  };
+
+  const handleLoadedFriesAddToCart = (customized: {
+    id: string;
+    name: string;
+    price: number;
+    variant: string;
+    quantity: number;
+  }) => {
+    addToCart({
+      id: customized.id,
+      name: customized.name,
+      price: customized.price,
+      variant: customized.variant,
+      quantity: customized.quantity,
+    });
+    toast.success(`Added ${customized.quantity}x ${customized.name} to basket!`);
+  };
+
+  const handleFriesOrTotsAddToCart = (customized: {
+    id: string;
+    name: string;
+    price: number;
+    variant: string;
+    quantity: number;
+  }) => {
+    addToCart({
+      id: customized.id,
+      name: customized.name,
+      price: customized.price,
+      variant: customized.variant,
+      quantity: customized.quantity,
+    });
     toast.success(`Added ${customized.quantity}x ${customized.name} to basket!`);
   };
 
@@ -292,18 +343,27 @@ export default function Menu({ user, addToCart, editDish }: MenuProps) {
     variant?: string;
     quantity: number;
   }) => {
-    for (let i = 0; i < customized.quantity; i++) {
-      addToCart({
-        id: `${customized.id}_${Date.now()}_${i}`,
-        name: customized.name,
-        price: customized.price,
-        variant: customized.variant,
-      });
-    }
+    addToCart({
+      id: customized.id,
+      name: customized.name,
+      price: customized.price,
+      variant: customized.variant,
+      quantity: customized.quantity,
+    });
     toast.success(`Added ${customized.quantity}x ${customized.name} to basket!`);
   };
 
   const handleAddToCart = (item: MenuItem) => {
+    // 0. Masala Fries and Homemade Coleslaw: Show Add to basket popup (quantity & basket button) without extra options
+    if (
+      item.name.toLowerCase().includes('masala fries') ||
+      item.name.toLowerCase().includes('homemade coleslaw') ||
+      item.name.toLowerCase() === 'coleslaw'
+    ) {
+      setGeneralModalItem(item);
+      return;
+    }
+
     // 1. Munch Box (exactly matching user screenshots: Donner -> Burger -> Drink -> Extras -> Summary & Quantity)
     if (
       item.name.toLowerCase().includes('munch box') ||
@@ -321,6 +381,16 @@ export default function Menu({ user, addToCart, editDish }: MenuProps) {
       item.customizationType === 'crrave-box'
     ) {
       setCrraveBoxModalItem(item);
+      return;
+    }
+
+    // 2b. Family Platter (exact 11-step sequential flow from captures: Burger 1-4 -> Extras up to 3 -> Peri Peri Chicken -> Sides 1-4 -> Drink -> Summary & Basket)
+    if (
+      item.id === 'deal-family-platter' ||
+      item.name.toLowerCase().includes('family platter') ||
+      item.customizationType === 'family-platter'
+    ) {
+      setFamilyPlatterModalItem(item);
       return;
     }
 
@@ -354,7 +424,31 @@ export default function Menu({ user, addToCart, editDish }: MenuProps) {
       return;
     }
 
-    // 6. Smash Burgers & Chicken Burgers (same design and functionality, chicken burgers without picture)
+    // 6. Loaded Fries & Loaded Tots (exact 3-step setup from screenshots: Sauce -> Protein -> Summary & Basket)
+    if (
+      item.customizationType === 'loaded-fries' ||
+      item.name.toLowerCase().includes('loaded fries') ||
+      item.name.toLowerCase().includes('loaded tots')
+    ) {
+      setLoadedFriesModalItem(item);
+      return;
+    }
+
+    // 7. House Fries/Tots, Truffle Fries/Tots, Garlic Mayo Cheese Fries/Tots ("Fries or Tots? - Choose one")
+    if (
+      item.customizationType === 'fries-or-tots' ||
+      item.customizationType === 'cheese-fries-tots' ||
+      item.name.toLowerCase().includes('fries/tots') ||
+      item.name.toLowerCase().includes('house fries') ||
+      item.name.toLowerCase().includes('truffle') ||
+      item.name.toLowerCase().includes('garlic mayo') ||
+      item.name.toLowerCase().includes('cheese fries/tots')
+    ) {
+      setFriesOrTotsModalItem(item);
+      return;
+    }
+
+    // 8. Smash Burgers & Chicken Burgers (same design and functionality, chicken burgers without picture)
     if (
       item.category === 'SMASH BURGERS' ||
       item.category === 'CHICKEN BURGERS' ||
@@ -365,7 +459,7 @@ export default function Menu({ user, addToCart, editDish }: MenuProps) {
       return;
     }
 
-    // 7. Grills & Peri Peri (including Chicken & Lamb Doner with extra Normal/Spicy step)
+    // 9. Grills & Peri Peri (including Chicken & Lamb Doner with extra Normal/Spicy step)
     if (
       (item.category === 'GRILLS & PERI PERI' ||
       item.customizationType === 'peri-peri-chicken' ||
@@ -380,7 +474,7 @@ export default function Menu({ user, addToCart, editDish }: MenuProps) {
       return;
     }
 
-    // 8. ALL OTHER CATEGORIES: Show options customizer with summary and quantity pill
+    // 10. ALL OTHER CATEGORIES: Show options customizer with summary and quantity pill
     setGeneralModalItem(item);
   };
 
@@ -522,10 +616,11 @@ export default function Menu({ user, addToCart, editDish }: MenuProps) {
 
     const variantStr = variantParts.join(' • ');
     addToCart({
-      id: `${customizingItem.id}-${variantStr.replace(/[^a-zA-Z0-9]/g, '-').toLowerCase()}`,
+      id: customizingItem.id,
       name: customizingItem.name,
       price: finalPrice,
       variant: variantStr || undefined,
+      quantity: 1,
     });
 
     setCustomizingItem(null);
@@ -543,15 +638,59 @@ export default function Menu({ user, addToCart, editDish }: MenuProps) {
   }, [items, searchQuery]);
 
   const itemsByCategory = useMemo(() => {
-    return categories.reduce((acc, cat) => {
-      acc[cat] = filteredItems.filter((item) => item.category === cat);
-      return acc;
-    }, {} as { [key: string]: MenuItem[] });
+    const allCatNames = [...categories, 'CRRAVER SIDES', 'CRRAVE SIDES'];
+    filteredItems.forEach((item) => {
+      if (item.category && !allCatNames.includes(item.category)) {
+        allCatNames.push(item.category);
+      }
+    });
+
+    const res: { [key: string]: MenuItem[] } = {};
+    allCatNames.forEach((cat) => {
+      res[cat] = filteredItems.filter((item) => {
+        if (item.category === cat) return true;
+        if (
+          (cat === 'CRRAVER SIDES' || cat === 'CRRAVE SIDES') &&
+          (item.category === 'CRRAVER SIDES' || item.category === 'CRRAVE SIDES')
+        ) {
+          return true;
+        }
+        return false;
+      });
+    });
+
+    const crraverSidesItems = filteredItems.filter((item) =>
+      item.category === 'CRRAVER SIDES' || item.category === 'CRRAVE SIDES'
+    );
+    res['CRRAVER SIDES'] = crraverSidesItems;
+    res['CRRAVE SIDES'] = crraverSidesItems;
+
+    return res;
   }, [categories, filteredItems]);
 
   const visibleCategories = useMemo(() => {
-    return categories.filter((cat) => itemsByCategory[cat] && itemsByCategory[cat].length > 0);
-  }, [categories, itemsByCategory]);
+    const allCatNames = [...categories];
+    filteredItems.forEach((item) => {
+      if (item.category && !allCatNames.includes(item.category)) {
+        allCatNames.push(item.category);
+      }
+    });
+    // Consolidate 'CRRAVE SIDES' into 'CRRAVER SIDES'
+    const normalized = allCatNames.map((c) => (c === 'CRRAVE SIDES' ? 'CRRAVER SIDES' : c));
+    const uniqueCats = Array.from(new Set(normalized));
+
+    // Sort by predefined CRRAVE_CATEGORIES order
+    uniqueCats.sort((a, b) => {
+      const idxA = CRRAVE_CATEGORIES.findIndex((c) => c.name.toUpperCase() === a.toUpperCase());
+      const idxB = CRRAVE_CATEGORIES.findIndex((c) => c.name.toUpperCase() === b.toUpperCase());
+      if (idxA !== -1 && idxB !== -1) return idxA - idxB;
+      if (idxA !== -1) return -1;
+      if (idxB !== -1) return 1;
+      return 0;
+    });
+
+    return uniqueCats.filter((cat) => itemsByCategory[cat] && itemsByCategory[cat].length > 0);
+  }, [categories, itemsByCategory, filteredItems]);
 
   return (
     <div className="relative min-h-screen text-white selection:bg-orange-500 selection:text-white">
@@ -579,7 +718,15 @@ export default function Menu({ user, addToCart, editDish }: MenuProps) {
                 <span className="text-sm font-bold uppercase tracking-wider">Restaurant Currently Closed</span>
               </div>
               <p className="text-gray-300 text-sm">
-                We are currently closed for immediate orders. You can still pre-order for scheduled collection or delivery!
+                We are currently closed for immediate orders. {
+                  discountSettings?.acceptDeliveryOrders === false && discountSettings?.acceptCollectionOrders === false
+                    ? 'Online orders are currently paused. Please check back later!'
+                    : discountSettings?.acceptDeliveryOrders === false
+                    ? 'You can still pre-order for scheduled collection!'
+                    : discountSettings?.acceptCollectionOrders === false
+                    ? 'You can still pre-order for scheduled delivery!'
+                    : 'You can still pre-order for scheduled collection or delivery!'
+                }
               </p>
             </div>
           </motion.div>
@@ -589,17 +736,17 @@ export default function Menu({ user, addToCart, editDish }: MenuProps) {
         <div className="max-w-4xl mx-auto px-4 md:px-0 py-6 text-center space-y-3">
           {discountSettings && (
             <div className="text-sm font-bold space-y-1">
-              {discountSettings.deliveryDiscount?.enabled && (
+              {(discountSettings.acceptDeliveryOrders !== false) && discountSettings.deliveryDiscount?.enabled && (
                 <p className="text-orange-500">
                   {discountSettings.deliveryDiscount.percentage}% OFF on Delivery orders over {formatPrice(discountSettings.deliveryDiscount.minOrder)}
                 </p>
               )}
-              {discountSettings.collectionDiscount?.enabled && (
+              {(discountSettings.acceptCollectionOrders !== false) && discountSettings.collectionDiscount?.enabled && (
                 <p className="text-orange-500">
                   {discountSettings.collectionDiscount.percentage}% OFF on Collection over {formatPrice(discountSettings.collectionDiscount.minOrder)}
                 </p>
               )}
-              {discountSettings.freeDeliveryEnabled && (
+              {(discountSettings.acceptDeliveryOrders !== false) && discountSettings.freeDeliveryEnabled && (
                 <p className="text-green-500">
                   FREE Delivery on orders over {formatPrice(discountSettings.freeDeliveryMinOrder)}
                 </p>
@@ -636,9 +783,9 @@ export default function Menu({ user, addToCart, editDish }: MenuProps) {
 
         {/* Category & Dishes List */}
         <div className="max-w-4xl mx-auto px-4 py-8 space-y-4 overflow-hidden">
-          {visibleCategories.map((cat) => (
+          {visibleCategories.map((cat, catIdx) => (
             <div
-              key={cat}
+              key={`${cat}-${catIdx}`}
               data-category={cat}
               className="bg-white/5 border border-white/10 rounded-2xl overflow-hidden shadow-2xl"
             >
@@ -665,29 +812,32 @@ export default function Menu({ user, addToCart, editDish }: MenuProps) {
               <AnimatePresence initial={false}>
                 {(expandedCategories[cat] || searchQuery) && (
                   <motion.div
+                    key={`category-expanded-content-${cat}`}
                     initial={{ height: 0, opacity: 0 }}
                     animate={{ height: 'auto', opacity: 1 }}
                     exit={{ height: 0, opacity: 0 }}
                     transition={{ duration: 0.2, ease: 'easeInOut' }}
                   >
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4 p-4 sm:p-5">
-                      {itemsByCategory[cat].map((item) => {
-                        const hasCustomImage = !!item.image;
-                        const fallbackImage =
-                          cat === 'SMASH BURGERS'
-                            ? '/assets/burgers/cheeseburger.jpg'
-                            : cat === 'GRILLS & PERI PERI'
-                            ? '/assets/grills/peri_chicken_quarter.jpg'
-                            : (item.name.toLowerCase().includes('munch box') || item.id === 'deal-munch-box')
-                            ? '/assets/burgers/munchbox.jpg'
-                            : (cat === 'WRAPS' || item.name.toLowerCase().includes('wrap'))
-                            ? '/assets/wraps/wrap.jpg'
-                            : null;
-                        const imageToShow = cat !== 'CHICKEN BURGERS' ? (item.image || fallbackImage) : null;
+                      {itemsByCategory[cat].map((item, itemIdx) => {
+                        // Only show image if manually uploaded by the store owner (data URL or external URL)
+                        const isManualUpload = Boolean(
+                          item.image &&
+                            (item.image.startsWith('data:') ||
+                              item.image.startsWith('http://') ||
+                              item.image.startsWith('https://')) &&
+                            !item.image.startsWith('/assets/') &&
+                            !item.image.includes('cheeseburger') &&
+                            !item.image.includes('munchbox') &&
+                            !item.image.includes('wrap') &&
+                            !item.image.includes('Capture') &&
+                            !item.image.includes('peri_chicken')
+                        );
+                        const imageToShow = isManualUpload ? item.image : null;
 
                         return (
                           <div
-                            key={item.id}
+                            key={`${item.id}-${itemIdx}`}
                             onClick={() => handleAddToCart(item)}
                             className={cn(
                               'bg-[#0d0d0d] border border-zinc-800/90 hover:border-zinc-700 rounded-xl p-4 sm:p-5 flex justify-between gap-4 relative group cursor-pointer transition-all duration-200 hover:bg-[#141414] shadow-md',
@@ -800,19 +950,21 @@ export default function Menu({ user, addToCart, editDish }: MenuProps) {
       {/* Item Customization Modal */}
       <AnimatePresence>
         {customizingItem && (
-          <>
+          <div key={`customizer-root-${customizingItem.id || 'current'}`}>
             <motion.div
+              key="customizer-backdrop"
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
               onClick={() => setCustomizingItem(null)}
-              className="fixed inset-0 bg-black/85 backdrop-blur-md z-[100]"
+              className="fixed inset-0 bg-black/85 backdrop-blur-md z-[200]"
             />
             <motion.div
+              key="customizer-dialog"
               initial={{ opacity: 0, scale: 0.95, y: 20 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.95, y: 20 }}
-              className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-full max-w-lg bg-[#141414] border border-orange-500/30 rounded-[2rem] p-6 sm:p-8 z-[101] shadow-2xl max-h-[90vh] overflow-y-auto"
+              className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-full max-w-lg bg-[#141414] border border-orange-500/30 rounded-[2rem] p-6 sm:p-8 z-[201] shadow-2xl max-h-[90vh] overflow-y-auto"
             >
               {/* Modal Header */}
               <div className="flex justify-between items-start mb-6 pb-4 border-b border-white/10">
@@ -834,6 +986,8 @@ export default function Menu({ user, addToCart, editDish }: MenuProps) {
                   <X size={20} />
                 </button>
               </div>
+
+              <ItemImageBanner image={customizingItem.image || customizingItem.heroImage} name={customizingItem.name} />
 
               {/* Dynamic Option Sections */}
               <div className="space-y-6">
@@ -880,9 +1034,9 @@ export default function Menu({ user, addToCart, editDish }: MenuProps) {
                           Choose Included Can of Drink
                         </label>
                         <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-                          {SOFT_DRINK_CHOICES.map((drink) => (
+                          {SOFT_DRINK_CHOICES.map((drink, idx) => (
                             <button
-                              key={drink}
+                              key={`${drink}-${idx}`}
                               type="button"
                               onClick={() => setSelectedDrink(drink)}
                               className={cn(
@@ -947,9 +1101,9 @@ export default function Menu({ user, addToCart, editDish }: MenuProps) {
                       Choose Peri Peri Flavour
                     </label>
                     <div className="grid grid-cols-2 gap-2">
-                      {PERI_PERI_FLAVOURS.map((flavour) => (
+                      {PERI_PERI_FLAVOURS.map((flavour, idx) => (
                         <button
-                          key={flavour}
+                          key={`${flavour}-${idx}`}
                           type="button"
                           onClick={() => setSelectedPeriFlavour(flavour)}
                           className={cn(
@@ -973,9 +1127,9 @@ export default function Menu({ user, addToCart, editDish }: MenuProps) {
                       Choose Wings Flavour
                     </label>
                     <div className="grid grid-cols-3 gap-2">
-                      {WINGS_FLAVOURS.map((flavour) => (
+                      {WINGS_FLAVOURS.map((flavour, idx) => (
                         <button
-                          key={flavour}
+                          key={`${flavour}-${idx}`}
                           type="button"
                           onClick={() => setSelectedWingFlavour(flavour)}
                           className={cn(
@@ -999,9 +1153,9 @@ export default function Menu({ user, addToCart, editDish }: MenuProps) {
                       Choose Strips Flavour
                     </label>
                     <div className="grid grid-cols-2 gap-2">
-                      {STRIPS_FLAVOURS.map((flavour) => (
+                      {STRIPS_FLAVOURS.map((flavour, idx) => (
                         <button
-                          key={flavour}
+                          key={`${flavour}-${idx}`}
                           type="button"
                           onClick={() => setSelectedStripFlavour(flavour)}
                           className={cn(
@@ -1183,9 +1337,9 @@ export default function Menu({ user, addToCart, editDish }: MenuProps) {
                       <span className="text-[10px] text-gray-400">Mixed salad included</span>
                     </div>
                     <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-                      {WRAP_SAUCE_OPTIONS.map((sauce) => (
+                      {WRAP_SAUCE_OPTIONS.map((sauce, idx) => (
                         <button
-                          key={sauce}
+                          key={`${sauce}-${idx}`}
                           type="button"
                           onClick={() => setSelectedWrapSauce(sauce)}
                           className={cn(
@@ -1241,9 +1395,9 @@ export default function Menu({ user, addToCart, editDish }: MenuProps) {
                         Choose Meat Topping
                       </label>
                       <div className="grid grid-cols-3 gap-2">
-                        {(['Grilled Chicken', 'Beef', 'Crispy Chicken'] as const).map((meat) => (
+                        {(['Grilled Chicken', 'Beef', 'Crispy Chicken'] as const).map((meat, idx) => (
                           <button
-                            key={meat}
+                            key={`${meat}-${idx}`}
                             type="button"
                             onClick={() => setSelectedLoadedMeat(meat)}
                             className={cn(
@@ -1304,9 +1458,9 @@ export default function Menu({ user, addToCart, editDish }: MenuProps) {
                         Choose Main Choice (Fries included)
                       </label>
                       <div className="grid grid-cols-3 gap-2">
-                        {(['4 Nuggets', 'Mini Cheeseburger', 'Mini Chicken Burger'] as const).map((main) => (
+                        {(['4 Nuggets', 'Mini Cheeseburger', 'Mini Chicken Burger'] as const).map((main, idx) => (
                           <button
-                            key={main}
+                            key={`${main}-${idx}`}
                             type="button"
                             onClick={() => setSelectedKidsMain(main)}
                             className={cn(
@@ -1325,10 +1479,10 @@ export default function Menu({ user, addToCart, editDish }: MenuProps) {
                       <label className="text-xs font-black uppercase tracking-wider text-gray-300 block">
                         Choose Drink (Included)
                       </label>
-                      <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-                        {SOFT_DRINK_CHOICES.map((drink) => (
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                        {['Fruit Shoot'].map((drink, idx) => (
                           <button
-                            key={drink}
+                            key={`${drink}-${idx}`}
                             type="button"
                             onClick={() => setSelectedDrink(drink)}
                             className={cn(
@@ -1388,9 +1542,9 @@ export default function Menu({ user, addToCart, editDish }: MenuProps) {
                         Choose Drink (Included)
                       </label>
                       <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-                        {SOFT_DRINK_CHOICES.map((drink) => (
+                        {SOFT_DRINK_CHOICES.map((drink, idx) => (
                           <button
-                            key={drink}
+                            key={`${drink}-${idx}`}
                             type="button"
                             onClick={() => setSelectedDrink(drink)}
                             className={cn(
@@ -1423,8 +1577,8 @@ export default function Menu({ user, addToCart, editDish }: MenuProps) {
                         onChange={(e) => setSelectedCrraveBurger(e.target.value)}
                         className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-sm font-bold text-white focus:outline-none focus:border-orange-500 cursor-pointer"
                       >
-                        {ALL_BURGER_NAMES.map((name) => (
-                          <option key={name} value={name} className="bg-[#141414] text-white">
+                        {ALL_BURGER_NAMES.map((name, idx) => (
+                          <option key={`${name}-${idx}`} value={name} className="bg-[#141414] text-white">
                             {name}
                           </option>
                         ))}
@@ -1435,9 +1589,9 @@ export default function Menu({ user, addToCart, editDish }: MenuProps) {
                         Choose Drink (Included)
                       </label>
                       <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-                        {SOFT_DRINK_CHOICES.map((drink) => (
+                        {SOFT_DRINK_CHOICES.map((drink, idx) => (
                           <button
-                            key={drink}
+                            key={`${drink}-${idx}`}
                             type="button"
                             onClick={() => setSelectedDrink(drink)}
                             className={cn(
@@ -1475,7 +1629,7 @@ export default function Menu({ user, addToCart, editDish }: MenuProps) {
                 </button>
               </div>
             </motion.div>
-          </>
+          </div>
         )}
       </AnimatePresence>
 
@@ -1525,6 +1679,30 @@ export default function Menu({ user, addToCart, editDish }: MenuProps) {
         item={crraveBoxModalItem}
         onClose={() => setCrraveBoxModalItem(null)}
         onAddToCart={handleCrraveBoxAddToCart}
+      />
+
+      {/* Dedicated Family Platter Customizer Modal (exact setup from captures 1 to 11) */}
+      <FamilyPlatterModal
+        isOpen={!!familyPlatterModalItem}
+        item={familyPlatterModalItem}
+        onClose={() => setFamilyPlatterModalItem(null)}
+        onAddToCart={handleFamilyPlatterAddToCart}
+      />
+
+      {/* Dedicated Loaded Fries & Loaded Tots Customizer Modal */}
+      <LoadedFriesModal
+        isOpen={!!loadedFriesModalItem}
+        item={loadedFriesModalItem}
+        onClose={() => setLoadedFriesModalItem(null)}
+        onAddToCart={handleLoadedFriesAddToCart}
+      />
+
+      {/* Dedicated Fries or Tots Customizer Modal (House, Truffle, Garlic Mayo Cheese) */}
+      <FriesOrTotsModal
+        isOpen={!!friesOrTotsModalItem}
+        item={friesOrTotsModalItem}
+        onClose={() => setFriesOrTotsModalItem(null)}
+        onAddToCart={handleFriesOrTotsAddToCart}
       />
 
       {/* Dedicated General Category Customizer Modal (for all other menu items) */}

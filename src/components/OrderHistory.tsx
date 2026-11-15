@@ -166,16 +166,18 @@ export default function OrderHistory({ user, onRepeatOrder }: OrderHistoryProps)
                         <h4 className="text-[10px] font-bold text-gray-500 uppercase tracking-widest mb-3">Items</h4>
                         <ul className="space-y-2">
                           {order.items.map((item: any, i: number) => (
-                            <li key={i} className="text-sm flex justify-between border-b border-white/5 py-2 last:border-0 last:pb-0">
+                            <li key={`${order.id || 'ord'}-item-${i}`} className="text-sm flex justify-between border-b border-white/5 py-2 last:border-0 last:pb-0">
                               <div className="flex flex-col">
                                 <span className="text-gray-300">
                                   <span className="text-orange-500 font-bold mr-2">{item.quantity}x</span>
                                   {item.name}
                                 </span>
                                 {item.variant && (
-                                  <span className="text-[10px] text-orange-500 font-black uppercase tracking-widest pl-6">
-                                    + {item.variant}
-                                  </span>
+                                  <div className="text-[11px] text-orange-400 font-medium pl-6 space-y-0.5 mt-0.5">
+                                    {item.variant.split('|').map((part: string, pIdx: number) => (
+                                      <div key={`${order.id || 'ord'}-item-${i}-var-${pIdx}`}>• {part.trim()}</div>
+                                    ))}
+                                  </div>
                                 )}
                               </div>
                               <span className="font-bold">{formatPrice(item.price * item.quantity)}</span>

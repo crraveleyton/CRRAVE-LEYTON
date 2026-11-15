@@ -1,7 +1,9 @@
 import React, { useState, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'motion/react';
 import { ArrowLeft, X, Minus, Plus } from 'lucide-react';
 import { formatPrice, cn } from '../lib/utils';
+import { ItemImageBanner } from './ItemImageBanner';
 
 export interface GrillItem {
   id: string;
@@ -74,7 +76,6 @@ export const GrillsPeriPeriModal: React.FC<GrillsPeriPeriModalProps> = ({
   // Step 4: Final Summary & Quantity
   const [step, setStep] = useState<1 | 2 | 3 | 4>(1);
 
-  // Selections
   const [selectedFlavour, setSelectedFlavour] = useState<string>('Hot, Lemon & Herbs');
   const [donerHeat, setDonerHeat] = useState<'Normal' | 'Spicy'>('Normal');
   const [mealOption, setMealOption] = useState<'meal' | 'single'>('single');
@@ -113,7 +114,6 @@ export const GrillsPeriPeriModal: React.FC<GrillsPeriPeriModalProps> = ({
       setChosenSides(chosenSides.filter((s) => s !== side));
     } else {
       if (chosenSides.length >= maxSidesAllowed) {
-        // Replace oldest or keep at max
         setChosenSides([...chosenSides.slice(1), side]);
       } else {
         setChosenSides([...chosenSides, side]);
@@ -137,13 +137,9 @@ export const GrillsPeriPeriModal: React.FC<GrillsPeriPeriModalProps> = ({
     }
 
     if (sidesOption === '2sides') {
-      variantParts.push(
-        `2 Sides (${chosenSides.length > 0 ? chosenSides.join(', ') : 'Spicy Rice, Fries'})`
-      );
+      variantParts.push('Add 2 Sides');
     } else if (sidesOption === '4sides') {
-      variantParts.push(
-        `4 Sides (${chosenSides.length > 0 ? chosenSides.join(', ') : 'Assorted Sides'})`
-      );
+      variantParts.push('Add 4 Sides');
     }
 
     onAddToCart({
@@ -156,643 +152,500 @@ export const GrillsPeriPeriModal: React.FC<GrillsPeriPeriModalProps> = ({
     onClose();
   };
 
-  const heroImgSrc =
-    item.heroImage ||
-    item.image ||
-    (isDoner
-      ? '/assets/grills/chicken_doner.jpg'
-      : '/assets/grills/peri_chicken_hero.jpg');
+  if (typeof document === 'undefined') return null;
 
-  return (
+  return createPortal(
     <AnimatePresence>
-      <div className="fixed inset-0 z-[120] flex items-center justify-center p-0 sm:p-4">
-        {/* Backdrop */}
+      <div
+        key="grillsperiperi-portal-root"
+        className="fixed inset-0 z-[200] flex items-center justify-center p-0 sm:p-4 bg-black/85 backdrop-blur-sm overflow-hidden"
+        onClick={onClose}
+      >
         <motion.div
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          exit={{ opacity: 0 }}
-          onClick={onClose}
-          className="fixed inset-0 bg-black/80 backdrop-blur-sm"
-        />
-
-        {/* Modal Card */}
-        <motion.div
-          initial={{ opacity: 0, scale: 0.96, y: 20 }}
+          key="grillsperiperi-modal-dialog"
+          initial={{ opacity: 0, scale: 0.95, y: 20 }}
           animate={{ opacity: 1, scale: 1, y: 0 }}
-          exit={{ opacity: 0, scale: 0.96, y: 20 }}
+          exit={{ opacity: 0, scale: 0.95, y: 20 }}
           transition={{ duration: 0.2, ease: 'easeOut' }}
-          className="relative w-full max-w-lg bg-[#141414] text-white sm:rounded-2xl shadow-2xl border border-zinc-800/80 flex flex-col max-h-[100dvh] sm:max-h-[90vh] overflow-hidden z-10"
+          onClick={(e) => e.stopPropagation()}
+          className="relative w-full max-w-lg bg-[#000000] text-white sm:rounded-2xl shadow-2xl border border-zinc-800 flex flex-col max-h-[100dvh] sm:max-h-[90vh] overflow-hidden z-10"
         >
-          {/* Top Header Bar for Steps 2, 3, 4 */}
-          {step > 1 ? (
-            <div className="flex items-center justify-between px-5 py-4 border-b border-zinc-800 bg-[#141414] shrink-0">
+          {/* Top Bar - explicitly sticky, highest z-index inside modal */}
+          <div className="sticky top-0 z-30 flex items-center justify-between px-5 py-4 border-b border-zinc-900 bg-[#000000] shrink-0">
+            {step > 1 ? (
               <button
                 type="button"
                 onClick={() => setStep((prev) => (prev > 1 ? ((prev - 1) as any) : 1))}
-                className="p-1 hover:bg-white/10 rounded-full transition-colors text-white cursor-pointer"
-                aria-label="Back"
+                className="p-1 -ml-1 text-white hover:text-gray-300 transition-colors cursor-pointer"
+                aria-label="Previous step"
               >
                 <ArrowLeft size={22} />
               </button>
-              <h2 className="text-lg font-bold text-white tracking-tight">
-                {item.name}
-              </h2>
+            ) : (
+              <div className="w-6" />
+            )}
+
+            <h1 className="font-semibold text-base sm:text-lg text-white tracking-tight truncate max-w-[280px]">
+              {item.name}
+            </h1>
+
+            <button
+              type="button"
+              onClick={onClose}
+              className="p-1 -mr-1 text-white hover:text-gray-300 transition-colors cursor-pointer"
+              aria-label="Close modal"
+            >
+              <X size={22} />
+            </button>
+          </div>
+
+          {/* Modal Body - Single Scrollable Area (NO duplicate inner scrollbar!) */}
+          <div className="flex-1 overflow-y-auto p-5 sm:p-6 space-y-5">
+            {/* STEP 1: Peri Peri Flavours or Doner Heat */}
+            {step === 1 && (
+              <div className="space-y-5">
+                <ItemImageBanner image={item.image || item.heroImage} name={item.name} />
+                <div>
+                  <h2 className="text-xl sm:text-2xl font-bold text-white tracking-tight">
+                    {item.name}
+                  </h2>
+                  {item.description && (
+                    <p className="text-zinc-400 text-sm mt-1.5 leading-relaxed">
+                      {item.description}
+                    </p>
+                  )}
+                </div>
+
+                {isDoner ? (
+                  <div className="space-y-3 pt-1">
+                    <h3 className="text-base sm:text-lg font-bold text-white tracking-tight">
+                      Normal or Spicy? – Choose one
+                    </h3>
+
+                    <div className="space-y-2.5">
+                      {DONER_HEAT_OPTIONS.map((heat, hIdx) => {
+                        const isSelected = donerHeat === heat;
+                        return (
+                          <label
+                            key={`${heat}-${hIdx}`}
+                            onClick={() => setDonerHeat(heat as any)}
+                            className={cn(
+                              'flex items-center justify-between p-3.5 rounded-xl border transition-all cursor-pointer select-none',
+                              isSelected
+                                ? 'bg-zinc-900 border-[#f5a623]'
+                                : 'bg-black border-zinc-800/80 hover:border-zinc-700 hover:bg-zinc-900/50'
+                            )}
+                          >
+                            <div className="flex items-center gap-3">
+                              <div
+                                className={cn(
+                                  'w-5 h-5 rounded-full border-2 flex items-center justify-center shrink-0 transition-all',
+                                  isSelected
+                                    ? 'border-[#f5a623] bg-[#f5a623]'
+                                    : 'border-zinc-500 bg-transparent'
+                                )}
+                              >
+                                {isSelected && (
+                                  <div className="w-2 h-2 rounded-full bg-black" />
+                                )}
+                              </div>
+                              <span className="font-normal text-sm sm:text-base text-white">
+                                {heat}
+                              </span>
+                            </div>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ) : (
+                  <div className="space-y-3 pt-1">
+                    <h3 className="text-base sm:text-lg font-bold text-white tracking-tight">
+                      Peri Peri Flavours – Choose one
+                    </h3>
+
+                    <div className="space-y-2.5">
+                      {PERI_FLAVOURS.map((flavour, fIdx) => {
+                        const isSelected = selectedFlavour === flavour;
+                        return (
+                          <label
+                            key={`${flavour}-${fIdx}`}
+                            onClick={() => setSelectedFlavour(flavour)}
+                            className={cn(
+                              'flex items-center justify-between p-3.5 rounded-xl border transition-all cursor-pointer select-none',
+                              isSelected
+                                ? 'bg-zinc-900 border-[#f5a623]'
+                                : 'bg-black border-zinc-800/80 hover:border-zinc-700 hover:bg-zinc-900/50'
+                            )}
+                          >
+                            <div className="flex items-center gap-3">
+                              <div
+                                className={cn(
+                                  'w-5 h-5 rounded-full border-2 flex items-center justify-center shrink-0 transition-all',
+                                  isSelected
+                                    ? 'border-[#f5a623] bg-[#f5a623]'
+                                    : 'border-zinc-500 bg-transparent'
+                                )}
+                              >
+                                {isSelected && (
+                                  <div className="w-2 h-2 rounded-full bg-black" />
+                                )}
+                              </div>
+                              <span className="font-normal text-sm sm:text-base text-white">
+                                {flavour}
+                              </span>
+                            </div>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* STEP 2: MAKE IT A MEAL */}
+            {step === 2 && (
+              <div className="space-y-5">
+                <div>
+                  <h3 className="text-base sm:text-lg font-bold text-white tracking-tight">
+                    Make it a Meal – Choose one
+                  </h3>
+                </div>
+
+                <div className="space-y-2.5">
+                  <label
+                    onClick={() => setMealOption('meal')}
+                    className={cn(
+                      'flex items-center justify-between p-3.5 rounded-xl border transition-all cursor-pointer select-none',
+                      mealOption === 'meal'
+                        ? 'bg-zinc-900 border-[#f5a623]'
+                        : 'bg-black border-zinc-800/80 hover:border-zinc-700 hover:bg-zinc-900/50'
+                    )}
+                  >
+                    <div className="flex items-center gap-3">
+                      <div
+                        className={cn(
+                          'w-5 h-5 rounded-full border-2 flex items-center justify-center shrink-0 transition-all',
+                          mealOption === 'meal'
+                            ? 'border-[#f5a623] bg-[#f5a623]'
+                            : 'border-zinc-500 bg-transparent'
+                        )}
+                      >
+                        {mealOption === 'meal' && (
+                          <div className="w-2 h-2 rounded-full bg-black" />
+                        )}
+                      </div>
+                      <span className="font-normal text-sm sm:text-base text-white">
+                        Make it a Meal (Chips & Drink)
+                      </span>
+                    </div>
+                    <span className="font-semibold text-sm text-zinc-300">
+                      +£2.00
+                    </span>
+                  </label>
+
+                  {mealOption === 'meal' && (
+                    <div className="p-3 bg-zinc-900/80 border border-zinc-800 rounded-xl space-y-2">
+                      <span className="text-xs font-semibold text-zinc-400 block">
+                        Included Can of Drink:
+                      </span>
+                      <div className="grid grid-cols-2 gap-1.5">
+                        {DRINK_OPTIONS.map((drink, dIdx) => (
+                          <button
+                            key={`${drink}-${dIdx}`}
+                            type="button"
+                            onClick={() => setSelectedDrink(drink)}
+                            className={cn(
+                              'p-2 rounded-lg text-xs font-medium text-left transition-colors cursor-pointer border',
+                              selectedDrink === drink
+                                ? 'bg-[#f5a623] text-black border-[#f5a623] font-bold'
+                                : 'bg-black text-zinc-300 border-zinc-800 hover:bg-zinc-800'
+                            )}
+                          >
+                            {drink}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  <label
+                    onClick={() => setMealOption('single')}
+                    className={cn(
+                      'flex items-center justify-between p-3.5 rounded-xl border transition-all cursor-pointer select-none',
+                      mealOption === 'single'
+                        ? 'bg-zinc-900 border-[#f5a623]'
+                        : 'bg-black border-zinc-800/80 hover:border-zinc-700 hover:bg-zinc-900/50'
+                    )}
+                  >
+                    <div className="flex items-center gap-3">
+                      <div
+                        className={cn(
+                          'w-5 h-5 rounded-full border-2 flex items-center justify-center shrink-0 transition-all',
+                          mealOption === 'single'
+                            ? 'border-[#f5a623] bg-[#f5a623]'
+                            : 'border-zinc-500 bg-transparent'
+                        )}
+                      >
+                        {mealOption === 'single' && (
+                          <div className="w-2 h-2 rounded-full bg-black" />
+                        )}
+                      </div>
+                      <span className="font-normal text-sm sm:text-base text-white">
+                        Single
+                      </span>
+                    </div>
+                  </label>
+                </div>
+
+                <div className="bg-[#262626] rounded-xl p-4 space-y-1.5 text-xs sm:text-sm mt-4">
+                  <h4 className="text-sm sm:text-base font-semibold text-white">Summary</h4>
+                  <div className="flex justify-between items-center font-medium">
+                    <span className="text-white">{item.name}</span>
+                    <span className="font-semibold text-white">
+                      {formatPrice(basePrice)}
+                    </span>
+                  </div>
+                  <div className="text-zinc-300 pl-1">
+                    {isDoner ? donerHeat : selectedFlavour}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* STEP 3: OPTIONS (SIDES) */}
+            {step === 3 && (
+              <div className="space-y-5">
+                <div>
+                  <h3 className="text-base sm:text-lg font-bold text-white tracking-tight">
+                    Add Sides – Choose one
+                  </h3>
+                </div>
+
+                <div className="space-y-2.5">
+                  <label
+                    onClick={() => setSidesOption('none')}
+                    className={cn(
+                      'flex items-center justify-between p-3.5 rounded-xl border transition-all cursor-pointer select-none',
+                      sidesOption === 'none'
+                        ? 'bg-zinc-900 border-[#f5a623]'
+                        : 'bg-black border-zinc-800/80 hover:border-zinc-700 hover:bg-zinc-900/50'
+                    )}
+                  >
+                    <div className="flex items-center gap-3">
+                      <div
+                        className={cn(
+                          'w-5 h-5 rounded-full border-2 flex items-center justify-center shrink-0 transition-all',
+                          sidesOption === 'none'
+                            ? 'border-[#f5a623] bg-[#f5a623]'
+                            : 'border-zinc-500 bg-transparent'
+                        )}
+                      >
+                        {sidesOption === 'none' && (
+                          <div className="w-2 h-2 rounded-full bg-black" />
+                        )}
+                      </div>
+                      <span className="font-normal text-sm sm:text-base text-white">
+                        No Extra Sides
+                      </span>
+                    </div>
+                  </label>
+
+                  <label
+                    onClick={() => setSidesOption('2sides')}
+                    className={cn(
+                      'flex items-center justify-between p-3.5 rounded-xl border transition-all cursor-pointer select-none',
+                      sidesOption === '2sides'
+                        ? 'bg-zinc-900 border-[#f5a623]'
+                        : 'bg-black border-zinc-800/80 hover:border-zinc-700 hover:bg-zinc-900/50'
+                    )}
+                  >
+                    <div className="flex items-center gap-3">
+                      <div
+                        className={cn(
+                          'w-5 h-5 rounded-full border-2 flex items-center justify-center shrink-0 transition-all',
+                          sidesOption === '2sides'
+                            ? 'border-[#f5a623] bg-[#f5a623]'
+                            : 'border-zinc-500 bg-transparent'
+                        )}
+                      >
+                        {sidesOption === '2sides' && (
+                          <div className="w-2 h-2 rounded-full bg-black" />
+                        )}
+                      </div>
+                      <span className="font-normal text-sm sm:text-base text-white">
+                        Add 2 Sides
+                      </span>
+                    </div>
+                    <span className="font-semibold text-sm text-zinc-300">
+                      +£3.50
+                    </span>
+                  </label>
+
+                  <label
+                    onClick={() => setSidesOption('4sides')}
+                    className={cn(
+                      'flex items-center justify-between p-3.5 rounded-xl border transition-all cursor-pointer select-none',
+                      sidesOption === '4sides'
+                        ? 'bg-zinc-900 border-[#f5a623]'
+                        : 'bg-black border-zinc-800/80 hover:border-zinc-700 hover:bg-zinc-900/50'
+                    )}
+                  >
+                    <div className="flex items-center gap-3">
+                      <div
+                        className={cn(
+                          'w-5 h-5 rounded-full border-2 flex items-center justify-center shrink-0 transition-all',
+                          sidesOption === '4sides'
+                            ? 'border-[#f5a623] bg-[#f5a623]'
+                            : 'border-zinc-500 bg-transparent'
+                        )}
+                      >
+                        {sidesOption === '4sides' && (
+                          <div className="w-2 h-2 rounded-full bg-black" />
+                        )}
+                      </div>
+                      <span className="font-normal text-sm sm:text-base text-white">
+                        Add 4 Sides
+                      </span>
+                    </div>
+                    <span className="font-semibold text-sm text-zinc-300">
+                      +£6.50
+                    </span>
+                  </label>
+                </div>
+
+                <div className="bg-[#262626] rounded-xl p-4 space-y-1.5 text-xs sm:text-sm mt-4">
+                  <h4 className="text-sm sm:text-base font-semibold text-white">Summary</h4>
+                  <div className="flex justify-between items-center font-medium">
+                    <span className="text-white">{item.name}</span>
+                    <span className="font-semibold text-white">
+                      {formatPrice(basePrice)}
+                    </span>
+                  </div>
+                  <div className="text-zinc-300 pl-1">
+                    {isDoner ? donerHeat : selectedFlavour}
+                  </div>
+                  {mealOption === 'meal' && (
+                    <div className="text-zinc-300 pl-1">
+                      Meal (+£2.00) - {selectedDrink}
+                    </div>
+                  )}
+                  {sidesOption === '2sides' && (
+                    <div className="text-zinc-300 pl-1">
+                      Add 2 Sides (+£3.50)
+                    </div>
+                  )}
+                  {sidesOption === '4sides' && (
+                    <div className="text-zinc-300 pl-1">
+                      Add 4 Sides (+£6.50)
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* STEP 4: FINAL SUMMARY REVIEW */}
+            {step === 4 && (
+              <div className="space-y-5">
+                <div>
+                  <h3 className="text-xl font-bold text-white tracking-tight">
+                    Summary
+                  </h3>
+                </div>
+
+                <div className="space-y-2.5 pt-1 text-sm">
+                  <div className="flex justify-between items-center text-base font-semibold">
+                    <span className="text-white">{item.name}</span>
+                    <span className="font-semibold text-white">
+                      {formatPrice(basePrice)}
+                    </span>
+                  </div>
+                  <div className="text-zinc-300 pl-1">
+                    {isDoner ? `Heat: ${donerHeat}` : `Flavour: ${selectedFlavour}`}
+                  </div>
+
+                  {mealOption === 'meal' && (
+                    <div className="flex justify-between items-center text-zinc-300 pl-1">
+                      <span>Meal (Chips & {selectedDrink})</span>
+                      <span className="font-semibold text-white">+£2.00</span>
+                    </div>
+                  )}
+
+                  {sidesOption === '2sides' && (
+                    <div className="flex justify-between items-center text-zinc-300 pl-1">
+                      <span>Add 2 Sides</span>
+                      <span className="font-semibold text-white">+£3.50</span>
+                    </div>
+                  )}
+                  {sidesOption === '4sides' && (
+                    <div className="flex justify-between items-center text-zinc-300 pl-1">
+                      <span>Add 4 Sides</span>
+                      <span className="font-semibold text-white">+£6.50</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Bottom Bar */}
+          {step < 4 ? (
+            <div className="border-t border-zinc-900 bg-[#000000] px-6 py-4 shrink-0 flex items-center justify-between gap-4">
               <button
                 type="button"
-                onClick={onClose}
-                className="p-1 hover:bg-white/10 rounded-full transition-colors text-white cursor-pointer"
-                aria-label="Close"
+                onClick={() => setStep((s) => ((s + 1) as any))}
+                className="flex-1 py-3.5 bg-[#f5a623] hover:bg-[#e09612] text-black font-bold rounded-xl text-center text-sm transition-all cursor-pointer active:scale-[0.98] shadow-md shadow-amber-500/10"
               >
-                <X size={22} />
+                Next
               </button>
+              <div className="text-right shrink-0">
+                <span className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest block">
+                  TOTAL
+                </span>
+                <span className="font-bold text-base sm:text-lg text-white">
+                  {formatPrice(singleUnitTotal)}
+                </span>
+              </div>
             </div>
           ) : (
-            <div className="absolute top-4 right-4 z-20">
+            <div className="border-t border-zinc-900 bg-[#000000] px-5 py-4 shrink-0 flex items-center gap-3">
+              <div className="flex items-center bg-[#2b2b2b] rounded-xl px-2 py-1.5 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => setQuantity((q) => Math.max(1, q - 1))}
+                  className="w-8 h-8 flex items-center justify-center text-white hover:text-gray-300 disabled:opacity-40 cursor-pointer"
+                  disabled={quantity <= 1}
+                  aria-label="Decrease quantity"
+                >
+                  <Minus size={16} />
+                </button>
+                <span className="w-8 text-center font-bold text-sm text-white">
+                  {quantity}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setQuantity((q) => q + 1)}
+                  className="w-8 h-8 flex items-center justify-center text-white hover:text-gray-300 cursor-pointer"
+                  aria-label="Increase quantity"
+                >
+                  <Plus size={16} />
+                </button>
+              </div>
+
               <button
                 type="button"
-                onClick={onClose}
-                className="p-2 bg-black/60 hover:bg-black/80 text-white rounded-full transition-colors backdrop-blur-sm shadow-md cursor-pointer"
-                aria-label="Close"
+                onClick={handleFinishAndAdd}
+                className="flex-1 py-3.5 bg-[#f5a623] hover:bg-[#e09612] text-black font-bold rounded-xl text-sm transition-all cursor-pointer flex items-center justify-between px-5 active:scale-[0.98]"
               >
-                <X size={20} />
+                <span>Add to basket</span>
+                <span className="font-extrabold">{formatPrice(grandTotal)}</span>
               </button>
             </div>
           )}
-
-          {/* Modal Scrollable Body */}
-          <div className="flex-1 overflow-y-auto">
-            {/* STEP 1: Peri Peri Flavours or Doner Heat */}
-            {step === 1 && (
-              <div>
-                {/* Hero Image */}
-                <div className="w-full h-52 sm:h-64 bg-zinc-900 overflow-hidden relative">
-                  <img
-                    src={heroImgSrc}
-                    alt={item.name}
-                    className="w-full h-full object-cover object-center"
-                    onError={(e) => {
-                      (e.target as HTMLImageElement).src = isDoner
-                        ? '/assets/grills/chicken_doner.jpg'
-                        : '/assets/grills/peri_chicken_hero.jpg';
-                    }}
-                  />
-                </div>
-
-                <div className="p-5 sm:p-6 space-y-6">
-                  <div>
-                    <h2 className="text-2xl font-bold text-white tracking-tight">
-                      {item.name}
-                    </h2>
-                    {item.description && (
-                      <p className="text-zinc-400 text-sm mt-1.5 leading-relaxed">
-                        {item.description}
-                      </p>
-                    )}
-                  </div>
-
-                  {/* CHICKEN / LAMB DONER: Normal or Spicy? (Screenshot 1) */}
-                  {isDoner ? (
-                    <div className="space-y-3 pt-1">
-                      <h3 className="text-base font-bold text-white tracking-tight">
-                        Normal or Spicy? - Choose one
-                      </h3>
-
-                      <div className="space-y-2">
-                        {DONER_HEAT_OPTIONS.map((heat) => {
-                          const isSelected = donerHeat === heat;
-                          return (
-                            <label
-                              key={heat}
-                              onClick={() => setDonerHeat(heat as any)}
-                              className={cn(
-                                'flex items-center justify-between p-4 rounded-xl border transition-all cursor-pointer',
-                                isSelected
-                                  ? 'bg-zinc-800/80 border-[#f5a623]'
-                                  : 'bg-zinc-900/50 border-zinc-800 hover:border-zinc-700'
-                              )}
-                            >
-                              <div className="flex items-center gap-3">
-                                <div
-                                  className={cn(
-                                    'w-5 h-5 rounded-full border-2 flex items-center justify-center transition-colors',
-                                    isSelected
-                                      ? 'border-[#f5a623] bg-[#f5a623]'
-                                      : 'border-zinc-500'
-                                  )}
-                                >
-                                  {isSelected && (
-                                    <div className="w-2 h-2 rounded-full bg-black" />
-                                  )}
-                                </div>
-                                <span className="font-semibold text-sm text-white">
-                                  {heat}
-                                </span>
-                              </div>
-                            </label>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  ) : (
-                    /* GRILL & PERI PERI ITEMS: Peri Peri Flavours (Screenshot 5) */
-                    <div className="space-y-3 pt-1">
-                      <h3 className="text-base font-bold text-white tracking-tight">
-                        Peri Peri Flavours - Choose one
-                      </h3>
-
-                      <div className="space-y-2">
-                        {PERI_FLAVOURS.map((flavour) => {
-                          const isSelected = selectedFlavour === flavour;
-                          return (
-                            <label
-                              key={flavour}
-                              onClick={() => setSelectedFlavour(flavour)}
-                              className={cn(
-                                'flex items-center justify-between p-4 rounded-xl border transition-all cursor-pointer',
-                                isSelected
-                                  ? 'bg-zinc-800/80 border-[#f5a623]'
-                                  : 'bg-zinc-900/50 border-zinc-800 hover:border-zinc-700'
-                              )}
-                            >
-                              <div className="flex items-center gap-3">
-                                <div
-                                  className={cn(
-                                    'w-5 h-5 rounded-full border-2 flex items-center justify-center transition-colors',
-                                    isSelected
-                                      ? 'border-[#f5a623] bg-[#f5a623]'
-                                      : 'border-zinc-500'
-                                  )}
-                                >
-                                  {isSelected && (
-                                    <div className="w-2 h-2 rounded-full bg-black" />
-                                  )}
-                                </div>
-                                <span className="font-semibold text-sm text-white">
-                                  {flavour}
-                                </span>
-                              </div>
-                            </label>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  )}
-                </div>
-              </div>
-            )}
-
-            {/* STEP 2: Make it a Meal (Screenshot 4) */}
-            {step === 2 && (
-              <div className="p-5 sm:p-6 space-y-6">
-                <div>
-                  <h3 className="text-base font-bold text-white tracking-tight mb-3">
-                    Make it a Meal - Choose one
-                  </h3>
-
-                  <div className="space-y-2">
-                    {/* Option 1: Meal */}
-                    <label
-                      onClick={() => setMealOption('meal')}
-                      className={cn(
-                        'flex items-center justify-between p-4 rounded-xl border transition-all cursor-pointer',
-                        mealOption === 'meal'
-                          ? 'bg-zinc-800/80 border-[#f5a623]'
-                          : 'bg-zinc-900/50 border-zinc-800 hover:border-zinc-700'
-                      )}
-                    >
-                      <div className="flex items-center gap-3">
-                        <div
-                          className={cn(
-                            'w-5 h-5 rounded-full border-2 flex items-center justify-center transition-colors',
-                            mealOption === 'meal'
-                              ? 'border-[#f5a623] bg-[#f5a623]'
-                              : 'border-zinc-500'
-                          )}
-                        >
-                          {mealOption === 'meal' && (
-                            <div className="w-2 h-2 rounded-full bg-black" />
-                          )}
-                        </div>
-                        <span className="font-semibold text-sm text-white">
-                          Make it a Meal (Drinks & Chips)
-                        </span>
-                      </div>
-                      <span className="font-bold text-sm text-zinc-300">
-                        +£2.00
-                      </span>
-                    </label>
-
-                    {/* Drink Selection if Meal is chosen */}
-                    {mealOption === 'meal' && (
-                      <motion.div
-                        initial={{ opacity: 0, height: 0 }}
-                        animate={{ opacity: 1, height: 'auto' }}
-                        className="pl-8 pr-2 pt-1 pb-3 space-y-2"
-                      >
-                        <span className="text-xs font-bold text-[#f5a623] uppercase tracking-wider block">
-                          Included Can of Drink:
-                        </span>
-                        <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-                          {DRINK_OPTIONS.map((drink) => (
-                            <button
-                              key={drink}
-                              type="button"
-                              onClick={() => setSelectedDrink(drink)}
-                              className={cn(
-                                'py-2 px-3 rounded-lg text-xs font-semibold border transition-all text-center',
-                                selectedDrink === drink
-                                  ? 'bg-[#f5a623] text-black border-[#f5a623] font-bold shadow-sm'
-                                  : 'bg-zinc-900 border-zinc-800 text-zinc-300 hover:bg-zinc-800'
-                              )}
-                            >
-                              {drink}
-                            </button>
-                          ))}
-                        </div>
-                      </motion.div>
-                    )}
-
-                    {/* Option 2: Single */}
-                    <label
-                      onClick={() => setMealOption('single')}
-                      className={cn(
-                        'flex items-center justify-between p-4 rounded-xl border transition-all cursor-pointer',
-                        mealOption === 'single'
-                          ? 'bg-zinc-800/80 border-[#f5a623]'
-                          : 'bg-zinc-900/50 border-zinc-800 hover:border-zinc-700'
-                      )}
-                    >
-                      <div className="flex items-center gap-3">
-                        <div
-                          className={cn(
-                            'w-5 h-5 rounded-full border-2 flex items-center justify-center transition-colors',
-                            mealOption === 'single'
-                              ? 'border-[#f5a623] bg-[#f5a623]'
-                              : 'border-zinc-500'
-                          )}
-                        >
-                          {mealOption === 'single' && (
-                            <div className="w-2 h-2 rounded-full bg-black" />
-                          )}
-                        </div>
-                        <span className="font-semibold text-sm text-white">
-                          Single
-                        </span>
-                      </div>
-                      <span className="text-xs text-zinc-500 font-medium">
-                        +£0.00
-                      </span>
-                    </label>
-                  </div>
-                </div>
-
-                {/* Summary Box (Screenshot 4) */}
-                <div className="pt-4 border-t border-zinc-800/80">
-                  <h4 className="text-base font-bold text-white tracking-tight mb-3">
-                    Summary
-                  </h4>
-                  <div className="space-y-2 text-sm">
-                    <div className="flex justify-between items-center text-zinc-300">
-                      <span>{item.name}</span>
-                      <span className="font-semibold text-white">
-                        {formatPrice(basePrice)}
-                      </span>
-                    </div>
-
-                    <div className="flex justify-between items-center text-zinc-300">
-                      <span>{isDoner ? donerHeat : selectedFlavour}</span>
-                    </div>
-
-                    {mealOption === 'meal' && (
-                      <div className="flex justify-between items-center text-zinc-300">
-                        <span>Make it a Meal (Drinks & Chips)</span>
-                        <span className="font-semibold text-white">
-                          +£2.00
-                        </span>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* STEP 3: Options - Grills & Peri Peri (Screenshot 3) */}
-            {step === 3 && (
-              <div className="p-5 sm:p-6 space-y-6">
-                <div>
-                  <h3 className="text-base font-bold text-white tracking-tight mb-3">
-                    Options - Grills & Peri Peri - Choose one
-                  </h3>
-
-                  <div className="space-y-2">
-                    {/* Add 2 Sides */}
-                    <label
-                      onClick={() => {
-                        setSidesOption('2sides');
-                        if (chosenSides.length > 2) setChosenSides(chosenSides.slice(0, 2));
-                      }}
-                      className={cn(
-                        'flex items-center justify-between p-4 rounded-xl border transition-all cursor-pointer',
-                        sidesOption === '2sides'
-                          ? 'bg-zinc-800/80 border-[#f5a623]'
-                          : 'bg-zinc-900/50 border-zinc-800 hover:border-zinc-700'
-                      )}
-                    >
-                      <div className="flex items-center gap-3">
-                        <div
-                          className={cn(
-                            'w-5 h-5 rounded-full border-2 flex items-center justify-center transition-colors',
-                            sidesOption === '2sides'
-                              ? 'border-[#f5a623] bg-[#f5a623]'
-                              : 'border-zinc-500'
-                          )}
-                        >
-                          {sidesOption === '2sides' && (
-                            <div className="w-2 h-2 rounded-full bg-black" />
-                          )}
-                        </div>
-                        <span className="font-semibold text-sm text-white">
-                          Add 2 Sides
-                        </span>
-                      </div>
-                      <span className="font-bold text-sm text-zinc-300">
-                        +£3.50
-                      </span>
-                    </label>
-
-                    {/* Add 4 Sides */}
-                    <label
-                      onClick={() => setSidesOption('4sides')}
-                      className={cn(
-                        'flex items-center justify-between p-4 rounded-xl border transition-all cursor-pointer',
-                        sidesOption === '4sides'
-                          ? 'bg-zinc-800/80 border-[#f5a623]'
-                          : 'bg-zinc-900/50 border-zinc-800 hover:border-zinc-700'
-                      )}
-                    >
-                      <div className="flex items-center gap-3">
-                        <div
-                          className={cn(
-                            'w-5 h-5 rounded-full border-2 flex items-center justify-center transition-colors',
-                            sidesOption === '4sides'
-                              ? 'border-[#f5a623] bg-[#f5a623]'
-                              : 'border-zinc-500'
-                          )}
-                        >
-                          {sidesOption === '4sides' && (
-                            <div className="w-2 h-2 rounded-full bg-black" />
-                          )}
-                        </div>
-                        <span className="font-semibold text-sm text-white">
-                          Add 4 Sides
-                        </span>
-                      </div>
-                      <span className="font-bold text-sm text-zinc-300">
-                        +£6.50
-                      </span>
-                    </label>
-
-                    {/* Single (No extra sides) */}
-                    <label
-                      onClick={() => {
-                        setSidesOption('none');
-                        setChosenSides([]);
-                      }}
-                      className={cn(
-                        'flex items-center justify-between p-4 rounded-xl border transition-all cursor-pointer',
-                        sidesOption === 'none'
-                          ? 'bg-zinc-800/80 border-[#f5a623]'
-                          : 'bg-zinc-900/50 border-zinc-800 hover:border-zinc-700'
-                      )}
-                    >
-                      <div className="flex items-center gap-3">
-                        <div
-                          className={cn(
-                            'w-5 h-5 rounded-full border-2 flex items-center justify-center transition-colors',
-                            sidesOption === 'none'
-                              ? 'border-[#f5a623] bg-[#f5a623]'
-                              : 'border-zinc-500'
-                          )}
-                        >
-                          {sidesOption === 'none' && (
-                            <div className="w-2 h-2 rounded-full bg-black" />
-                          )}
-                        </div>
-                        <span className="font-semibold text-sm text-white">
-                          Single
-                        </span>
-                      </div>
-                    </label>
-                  </div>
-
-                  {/* Sides Picker if 2 or 4 sides are chosen */}
-                  {(sidesOption === '2sides' || sidesOption === '4sides') && (
-                    <motion.div
-                      initial={{ opacity: 0, height: 0 }}
-                      animate={{ opacity: 1, height: 'auto' }}
-                      className="pt-4 space-y-2"
-                    >
-                      <div className="flex justify-between items-center text-xs">
-                        <span className="font-bold text-[#f5a623] uppercase tracking-wider">
-                          Choose {sidesOption === '2sides' ? '2 Sides' : '4 Sides'}:
-                        </span>
-                        <span className="text-zinc-400">
-                          {chosenSides.length} of {maxSidesAllowed} selected
-                        </span>
-                      </div>
-                      <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-                        {SIDE_OPTIONS.map((side) => {
-                          const isPicked = chosenSides.includes(side);
-                          return (
-                            <button
-                              key={side}
-                              type="button"
-                              onClick={() => handleToggleSide(side)}
-                              className={cn(
-                                'py-2 px-3 rounded-lg text-xs font-semibold border transition-all text-center cursor-pointer',
-                                isPicked
-                                  ? 'bg-[#f5a623] text-black border-[#f5a623] font-bold shadow-sm'
-                                  : 'bg-zinc-900 border-zinc-800 text-zinc-300 hover:bg-zinc-800'
-                              )}
-                            >
-                              {side}
-                            </button>
-                          );
-                        })}
-                      </div>
-                    </motion.div>
-                  )}
-                </div>
-
-                {/* Summary Box (Screenshot 3) */}
-                <div className="pt-4 border-t border-zinc-800/80">
-                  <h4 className="text-base font-bold text-white tracking-tight mb-3">
-                    Summary
-                  </h4>
-                  <div className="space-y-2 text-sm">
-                    <div className="flex justify-between items-center text-zinc-300">
-                      <span>{item.name}</span>
-                      <span className="font-semibold text-white">
-                        {formatPrice(basePrice)}
-                      </span>
-                    </div>
-
-                    <div className="flex justify-between items-center text-zinc-300">
-                      <span>{isDoner ? donerHeat : selectedFlavour}</span>
-                    </div>
-
-                    {mealOption === 'meal' && (
-                      <div className="flex justify-between items-center text-zinc-300">
-                        <span>Make it a Meal (Drinks & Chips)</span>
-                        <span className="font-semibold text-white">
-                          +{formatPrice(mealPrice)}
-                        </span>
-                      </div>
-                    )}
-
-                    {sidesOption !== 'none' && (
-                      <div className="flex justify-between items-center text-zinc-300">
-                        <span>
-                          {sidesOption === '2sides' ? 'Add 2 Sides' : 'Add 4 Sides'}
-                        </span>
-                        <span className="font-semibold text-white">
-                          +{formatPrice(sidesPrice)}
-                        </span>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* STEP 4: Final Summary & Add to basket (Screenshot 2) */}
-            {step === 4 && (
-              <div className="p-5 sm:p-6 space-y-6">
-                <div>
-                  <h3 className="text-xl font-bold text-white tracking-tight mb-4">
-                    Summary
-                  </h3>
-
-                  <div className="bg-zinc-900/60 border border-zinc-800 rounded-xl p-4 sm:p-5 space-y-3">
-                    <div className="flex justify-between items-center text-sm font-medium">
-                      <span className="text-white font-semibold text-base">
-                        {item.name}
-                      </span>
-                      <span className="font-bold text-white">
-                        {formatPrice(basePrice)}
-                      </span>
-                    </div>
-
-                    <div className="text-sm text-zinc-300 border-t border-zinc-800/60 pt-2.5">
-                      <span className="font-medium text-white">
-                        {isDoner ? `Heat: ${donerHeat}` : `Flavour: ${selectedFlavour}`}
-                      </span>
-                    </div>
-
-                    {mealOption === 'meal' && (
-                      <div className="flex justify-between items-center text-sm text-zinc-300 border-t border-zinc-800/60 pt-2.5">
-                        <div>
-                          <span>Make it a Meal (Drinks & Chips)</span>
-                          <span className="block text-xs text-[#f5a623] mt-0.5">
-                            Drink: {selectedDrink}
-                          </span>
-                        </div>
-                        <span className="font-semibold text-white">
-                          +{formatPrice(mealPrice)}
-                        </span>
-                      </div>
-                    )}
-
-                    {sidesOption !== 'none' && (
-                      <div className="flex justify-between items-center text-sm text-zinc-300 border-t border-zinc-800/60 pt-2.5">
-                        <div>
-                          <span>
-                            {sidesOption === '2sides' ? 'Add 2 Sides' : 'Add 4 Sides'}
-                          </span>
-                          {chosenSides.length > 0 && (
-                            <span className="block text-xs text-[#f5a623] mt-0.5">
-                              {chosenSides.join(', ')}
-                            </span>
-                          )}
-                        </div>
-                        <span className="font-semibold text-white">
-                          +{formatPrice(sidesPrice)}
-                        </span>
-                      </div>
-                    )}
-
-                    <div className="flex justify-between items-center text-sm font-bold text-white border-t border-zinc-700/80 pt-3">
-                      <span>Item Price (each)</span>
-                      <span className="text-[#f5a623] text-base">
-                        {formatPrice(singleUnitTotal)}
-                      </span>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
-
-          {/* Sticky Bottom Bar */}
-          <div className="border-t border-zinc-800 bg-[#141414] px-5 py-4 shrink-0">
-            {step < 4 ? (
-              <div className="flex items-center justify-between gap-4">
-                <button
-                  type="button"
-                  onClick={() => setStep((prev) => ((prev + 1) as any))}
-                  className="flex-1 py-3.5 px-6 rounded-lg bg-[#f5a623] hover:bg-[#e0961b] text-black font-bold text-base transition-transform active:scale-98 shadow-md flex items-center justify-center cursor-pointer"
-                >
-                  Continue &gt;&gt;
-                </button>
-                <div className="text-right shrink-0">
-                  <span className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest block leading-none">
-                    TOTAL
-                  </span>
-                  <span className="text-lg font-bold text-white mt-1 block leading-none">
-                    {formatPrice(singleUnitTotal)}
-                  </span>
-                </div>
-              </div>
-            ) : (
-              <div className="flex items-center gap-3">
-                {/* Quantity Pill */}
-                <div className="flex items-center gap-2 bg-zinc-800 border border-zinc-700/80 px-2 py-1.5 rounded-lg shrink-0">
-                  <button
-                    type="button"
-                    onClick={() => setQuantity((q) => Math.max(1, q - 1))}
-                    disabled={quantity <= 1}
-                    className="w-8 h-8 rounded-full bg-zinc-700/80 hover:bg-zinc-600 disabled:opacity-40 flex items-center justify-center text-white transition-colors cursor-pointer"
-                    aria-label="Decrease quantity"
-                  >
-                    <Minus size={14} />
-                  </button>
-                  <span className="font-bold text-base text-white px-2 min-w-[20px] text-center">
-                    {quantity}
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => setQuantity((q) => q + 1)}
-                    className="w-8 h-8 rounded-full bg-zinc-700/80 hover:bg-zinc-600 flex items-center justify-center text-white transition-colors cursor-pointer"
-                    aria-label="Increase quantity"
-                  >
-                    <Plus size={14} />
-                  </button>
-                </div>
-
-                {/* Add to Basket Button */}
-                <button
-                  type="button"
-                  onClick={handleFinishAndAdd}
-                  className="flex-1 py-3.5 px-5 rounded-lg bg-[#f5a623] hover:bg-[#e0961b] text-black font-black text-base transition-transform active:scale-98 shadow-lg flex items-center justify-between cursor-pointer"
-                >
-                  <span>Add to basket</span>
-                  <span className="font-black">{formatPrice(grandTotal)}</span>
-                </button>
-              </div>
-            )}
-          </div>
         </motion.div>
       </div>
-    </AnimatePresence>
+    </AnimatePresence>,
+    document.body
   );
 };

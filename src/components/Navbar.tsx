@@ -1,25 +1,10 @@
 import { useState, useEffect } from 'react';
 import { auth, googleProvider, signInWithPopup, signOut } from '../firebase';
 import { UserProfile } from '../App';
-import { ShoppingCart, User, LogOut, Menu as MenuIcon, Shield, Instagram, Facebook, Sparkles } from 'lucide-react';
+import { ShoppingCart, User, LogOut, Menu as MenuIcon, Shield, Sparkles } from 'lucide-react';
 import { toast } from 'sonner';
 import { cn } from '../lib/utils';
 import { motion } from 'motion/react';
-
-const TikTokIcon = ({ size = 18 }: { size?: number }) => (
-  <svg 
-    width={size} 
-    height={size} 
-    viewBox="0 0 24 24" 
-    fill="none" 
-    stroke="currentColor" 
-    strokeWidth="2" 
-    strokeLinecap="round" 
-    strokeLinejoin="round"
-  >
-    <path d="M9 12a4 4 0 1 0 4 4V4a5 5 0 0 0 5 5" />
-  </svg>
-);
 
 interface NavbarProps {
   user: UserProfile | null;
@@ -117,35 +102,6 @@ export default function Navbar({
           </div>
 
           <div className="flex items-center gap-3 sm:gap-4">
-            <div className="hidden sm:flex items-center gap-1">
-              <a
-                href="https://www.instagram.com/crrave.leyton/"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="p-2 text-gray-400 hover:text-orange-500 hover:bg-white/5 rounded-full transition-colors flex items-center justify-center"
-                title="Instagram @crrave.leyton"
-              >
-                <Instagram size={18} />
-              </a>
-              <a
-                href="https://www.facebook.com/people/Crrave/61573871107631/"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="p-2 text-gray-400 hover:text-orange-500 hover:bg-white/5 rounded-full transition-colors flex items-center justify-center"
-                title="Facebook Crrave"
-              >
-                <Facebook size={18} />
-              </a>
-              <a
-                href="https://www.tiktok.com/@crrave.leyton"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="p-2 text-gray-400 hover:text-orange-500 hover:bg-white/5 rounded-full transition-colors flex items-center justify-center"
-                title="TikTok @crrave.leyton"
-              >
-                <TikTokIcon size={18} />
-              </a>
-            </div>
             {user?.role !== 'admin' && (
               <motion.button
                 onClick={() => setCartOpen(true)}

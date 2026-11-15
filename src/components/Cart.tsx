@@ -1,12 +1,11 @@
 import { useEffect, useState, useMemo, useRef } from 'react';
 import { UserProfile, CartItem } from '../App';
 import { motion, AnimatePresence } from 'motion/react';
-import { X, Minus, Plus, ShoppingBag, Trash2, CreditCard, Truck, Store, ExternalLink, CheckCircle2, Clock, Loader2, AlertTriangle, Tag, Banknote, RotateCcw, Zap, Calendar, ChevronDown, Sparkles, Gift, Check, Phone } from 'lucide-react';
+import { X, Minus, Plus, ShoppingBag, Trash2, CreditCard, Truck, Store, ExternalLink, CheckCircle2, Clock, Loader2, AlertTriangle, Tag, Banknote, RotateCcw, Zap, Calendar, ChevronDown, ChevronRight, Sparkles, Gift, Check, Phone, User } from 'lucide-react';
 import { formatPrice, cn } from '../lib/utils';
 import { db, collection, addDoc, serverTimestamp, query, where, getDocs, auth, doc, getDoc, setDoc, updateDoc, onSnapshot, signInAnonymously } from '../firebase';
 import { toast } from 'sonner';
-import { GoogleGenAI, ThinkingLevel } from "@google/genai";
-import { isOpenNow as checkIsOpenNow, BUSINESS_HOURS, getOpeningTimesText, getIsoDateString, getRestaurantClosedStatus } from '../lib/businessHours';
+import { isOpenNow as checkIsOpenNow, BUSINESS_HOURS, getOpeningTimesText, getIsoDateString, getRestaurantClosedStatus, normalizeBusinessHours, getLondonNow } from '../lib/businessHours';
 import { fetchSortingMetadata, sortOrderItems, CategoryWithOrder, MenuItemWithOrder } from '../lib/orderSorter';
 
 enum OperationType {
@@ -75,10 +74,26 @@ interface CartProps {
 import { loadStripe } from '@stripe/stripe-js';
 import { Elements } from '@stripe/react-stripe-js';
 import CheckoutForm from './CheckoutForm';
+import PaymentErrorBoundary from './PaymentErrorBoundary';
 
-const stripePromise = loadStripe(import.meta.env.VITE_STRIPE_PUBLISHABLE_KEY || '');
+const stripePromiseCache: Record<string, Promise<any>> = {};
+
+function getStripePromise(publishableKey?: string | null) {
+  const key = publishableKey?.trim();
+  if (!key) return null;
+  if (!stripePromiseCache[key]) {
+    stripePromiseCache[key] = loadStripe(key).catch((err) => {
+      console.warn('Failed to load Stripe.js (offline or unavailable):', err);
+      return null;
+    });
+  }
+  return stripePromiseCache[key];
+}
 
 export default function Cart({ isOpen, setIsOpen, user, cart, removeFromCart, updateQuantity, clearCart, onRepeatOrder, setAuthModalOpen }: CartProps) {
+  const [stripePublishableKey, setStripePublishableKey] = useState<string>(() => {
+    return (import.meta.env.VITE_STRIPE_PUBLISHABLE_KEY as string) || '';
+  });
   const [orderType, setOrderType] = useState<'collection' | 'delivery'>('collection');
   const [customerName, setCustomerName] = useState('');
   const [email, setEmail] = useState('');
@@ -105,8 +120,33 @@ export default function Cart({ isOpen, setIsOpen, user, cart, removeFromCart, up
   const [clientSecret, setClientSecret] = useState<string | null>(null);
   const [showStripe, setShowStripe] = useState(false);
   const [showPaymentModal, setShowPaymentModal] = useState(false);
+  const [showAuthOrGuestModal, setShowAuthOrGuestModal] = useState(false);
+  const [validationErrors, setValidationErrors] = useState<Record<string, string>>({});
   const [lastOrder, setLastOrder] = useState<any>(null);
   const [useStampReward, setUseStampReward] = useState(true);
+
+  const activeStripePromise = useMemo(() => {
+    const key = stripePublishableKey || discountSettings?.stripePublishableKey;
+    return getStripePromise(key);
+  }, [stripePublishableKey, discountSettings?.stripePublishableKey]);
+
+  const stripeElementsOptions = useMemo(() => {
+    if (!clientSecret) return undefined;
+    return {
+      clientSecret,
+      appearance: {
+        theme: 'night' as const,
+        variables: {
+          colorPrimary: '#ea580c',
+          colorBackground: '#171717',
+          colorText: '#ffffff',
+          colorDanger: '#ef4444',
+          fontFamily: 'system-ui, -apple-system, BlinkMacSystemFont, sans-serif',
+          borderRadius: '16px',
+        },
+      },
+    };
+  }, [clientSecret]);
 
   // Concurrency & deduplication refs to prevent duplicate order placement & duplicate payment verification
   const isPlacingOrderRef = useRef(false);
@@ -140,8 +180,13 @@ export default function Cart({ isOpen, setIsOpen, user, cart, removeFromCart, up
     return cart;
   }, [cart, categoriesMetadata, menuItemsMetadata]);
 
-  const businessHours = discountSettings?.businessHours || BUSINESS_HOURS;
-  const isOpenNow = checkIsOpenNow(businessHours, discountSettings?.closedDates);
+  const businessHours = useMemo(() => {
+    return normalizeBusinessHours(discountSettings?.businessHours);
+  }, [discountSettings?.businessHours]);
+
+  const isOpenNow = useMemo(() => {
+    return checkIsOpenNow(discountSettings?.businessHours, discountSettings?.closedDates);
+  }, [discountSettings?.businessHours, discountSettings?.closedDates]);
 
   const todayStr = getIsoDateString();
   const closedStatusToday = getRestaurantClosedStatus(todayStr, discountSettings?.closedDates);
@@ -152,16 +197,16 @@ export default function Cart({ isOpen, setIsOpen, user, cart, removeFromCart, up
   const closedStatusTomorrow = getRestaurantClosedStatus(tomorrowStr, discountSettings?.closedDates);
 
   const getDynamicTimeSlots = (forTomorrow = false) => {
-    const now = new Date();
-    if (forTomorrow) {
-      now.setDate(now.getDate() + 1);
-    }
-    const day = now.getDay();
+    const london = getLondonNow();
+    const day = forTomorrow ? (london.day + 1) % 7 : london.day;
     const schedule = businessHours[day];
-    if (!schedule) return [];
+    if (!schedule || schedule.closed) return [];
     
-    // We only show ASAP for today
-    const slots = forTomorrow ? [] : ["ASAP"];
+    // We only show ASAP for today when restaurant is currently open
+    const slots: string[] = [];
+    if (!forTomorrow && isOpenNow) {
+      slots.push('ASAP');
+    }
     const prefix = forTomorrow ? "Tomorrow " : "";
     
     // Availability buffer: 60 minutes after opening for delivery, 20 minutes after opening for collection
@@ -173,10 +218,11 @@ export default function Cart({ isOpen, setIsOpen, user, cart, removeFromCart, up
     while (currentMins <= endMins) {
       const hour = Math.floor(currentMins / 60);
       const min = currentMins % 60;
-      const timeStr = `${hour.toString().padStart(2, '0')}:${min.toString().padStart(2, '0')}`;
+      const formattedHour = hour >= 24 ? (hour % 24) : hour;
+      const timeStr = `${formattedHour.toString().padStart(2, '0')}:${min.toString().padStart(2, '0')}`;
       slots.push(`${prefix}${timeStr}`);
       
-      // If the initial slot is not on a 15-min boundary (e.g. 17:20), align to next 15-min mark then increment by 15
+      // Align to 15-min increments
       if (currentMins === startMins && currentMins % 15 !== 0) {
         currentMins += (15 - (currentMins % 15));
       } else {
@@ -188,15 +234,13 @@ export default function Cart({ isOpen, setIsOpen, user, cart, removeFromCart, up
   };
 
   const getFilteredTimeSlots = () => {
-    const now = new Date();
-    const day = now.getDay();
-    const currentHours = now.getHours();
-    const currentMinutes = now.getMinutes();
-    const currentMins = currentHours * 60 + currentMinutes;
+    const london = getLondonNow();
+    const day = london.day;
+    const currentMins = london.currentMins;
 
     // Today's schedule
     const schedule = businessHours[day];
-    if (!schedule) return [];
+    if (!schedule || schedule.closed) return [];
 
     // Buffer: 60 mins for delivery, 20 mins for collection
     const bufferMinutes = orderType === 'collection' ? 20 : 60;
@@ -209,7 +253,11 @@ export default function Cart({ isOpen, setIsOpen, user, cart, removeFromCart, up
           
           const timeStr = slot.replace("Tomorrow ", "");
           const [slotHours, slotMinutes] = timeStr.split(':').map(Number);
-          const slotTimeInMins = slotHours * 60 + slotMinutes;
+          let slotTimeInMins = slotHours * 60 + slotMinutes;
+          // 00:00 closing time is midnight (1440 mins)
+          if (slotHours === 0 && slotMinutes === 0) {
+            slotTimeInMins = 1440;
+          }
           
           // Earliest time slot allowed based on opening time
           const minFromOpening = schedule.openMins + bufferMinutes;
@@ -257,6 +305,9 @@ export default function Cart({ isOpen, setIsOpen, user, cart, removeFromCart, up
         setDiscountSettings({
           ...data,
           allowCashOrders: data.allowCashOrders !== undefined ? data.allowCashOrders : true,
+          acceptDeliveryOrders: data.acceptDeliveryOrders !== undefined ? data.acceptDeliveryOrders : true,
+          acceptCollectionOrders: data.acceptCollectionOrders !== undefined ? data.acceptCollectionOrders : true,
+          stripePublishableKey: data.stripePublishableKey || '',
           collectionDiscount: data.collectionDiscount || { enabled: false, minOrder: 20, percentage: 10 },
           deliveryDiscount: data.deliveryDiscount || { enabled: false, minOrder: 30, percentage: 5 },
           cashDiscount: data.cashDiscount || { enabled: false, minOrder: 15, percentage: 5 },
@@ -276,6 +327,9 @@ export default function Cart({ isOpen, setIsOpen, user, cart, removeFromCart, up
       } else {
         setDiscountSettings({
           allowCashOrders: true,
+          acceptDeliveryOrders: true,
+          acceptCollectionOrders: true,
+          stripePublishableKey: '',
           collectionDiscount: { enabled: false, minOrder: 20, percentage: 10 },
           deliveryDiscount: { enabled: false, minOrder: 30, percentage: 5 },
           cashDiscount: { enabled: false, minOrder: 15, percentage: 5 },
@@ -292,6 +346,36 @@ export default function Cart({ isOpen, setIsOpen, user, cart, removeFromCart, up
     });
     return () => unsub();
   }, []);
+
+  // Fetch publishable key from settings or backend API immediately
+  useEffect(() => {
+    fetch('/api/stripe-config')
+      .then((res) => res.json())
+      .then((data) => {
+        if (data?.publishableKey && data.publishableKey.trim() !== '') {
+          setStripePublishableKey(data.publishableKey.trim());
+        }
+      })
+      .catch((err) => console.warn('Could not load stripe config:', err));
+  }, []);
+
+  useEffect(() => {
+    if (discountSettings?.stripePublishableKey && discountSettings.stripePublishableKey.trim() !== '') {
+      setStripePublishableKey((curr) => curr || discountSettings.stripePublishableKey.trim());
+    }
+  }, [discountSettings?.stripePublishableKey]);
+
+  useEffect(() => {
+    if (discountSettings?.acceptDeliveryOrders === false && orderType === 'delivery') {
+      if (discountSettings?.acceptCollectionOrders !== false) {
+        setOrderType('collection');
+      }
+    } else if (discountSettings?.acceptCollectionOrders === false && orderType === 'collection') {
+      if (discountSettings?.acceptDeliveryOrders !== false) {
+        setOrderType('delivery');
+      }
+    }
+  }, [discountSettings?.acceptDeliveryOrders, discountSettings?.acceptCollectionOrders, orderType]);
 
   useEffect(() => {
     const calculateDeliveryFee = () => {
@@ -411,10 +495,11 @@ export default function Cart({ isOpen, setIsOpen, user, cart, removeFromCart, up
         const clientSecretInUrl = urlParams.get('payment_intent_client_secret');
         const paymentIntentInUrl = urlParams.get('payment_intent');
         const isSuccessParam = urlParams.get('payment_success') === 'true';
+        const hasUrlRedirectParam = Boolean(clientSecretInUrl || paymentIntentInUrl || isSuccessParam);
         
         const pendingRaw = localStorage.getItem('crrave_pending_online_order') || sessionStorage.getItem('crrave_pending_online_order');
 
-        if (!pendingRaw && !clientSecretInUrl && !paymentIntentInUrl) return;
+        if (!pendingRaw && !hasUrlRedirectParam) return;
 
         let pendingOrder: any = null;
         if (pendingRaw) {
@@ -428,6 +513,12 @@ export default function Cart({ isOpen, setIsOpen, user, cart, removeFromCart, up
           } catch (e) {
             console.error('Error parsing pending order:', e);
           }
+        }
+
+        // Only verify if customer returned from a payment redirect or actually clicked pay/submitted!
+        // Prevents premature verification while user is still viewing or typing into the payment form
+        if (!hasUrlRedirectParam && !pendingOrder?.paymentSubmitted) {
+          return;
         }
 
         const secretToCheck = clientSecretInUrl || pendingOrder?.clientSecret;
@@ -485,7 +576,7 @@ export default function Cart({ isOpen, setIsOpen, user, cart, removeFromCart, up
         }
 
         // 2. Client-side fallback check via Stripe SDK
-        const stripe = await stripePromise;
+        const stripe = await activeStripePromise;
         if (!stripe || !secretToCheck) return;
 
         const { paymentIntent } = await stripe.retrievePaymentIntent(secretToCheck);
@@ -611,10 +702,12 @@ export default function Cart({ isOpen, setIsOpen, user, cart, removeFromCart, up
     };
   }, [user]);
 
+  const isDeliveryAvailable = discountSettings?.acceptDeliveryOrders !== false;
+  const isCollectionAvailable = discountSettings?.acceptCollectionOrders !== false;
   const subtotal = cart.reduce((sum, item) => sum + item.price * item.quantity, 0);
   
   let currentDeliveryFee = deliveryFee;
-  if (orderType === 'delivery' && discountSettings?.freeDeliveryEnabled && subtotal >= discountSettings.freeDeliveryMinOrder) {
+  if (orderType === 'delivery' && isDeliveryAvailable && discountSettings?.freeDeliveryEnabled && subtotal >= discountSettings.freeDeliveryMinOrder) {
     currentDeliveryFee = 0;
   }
 
@@ -631,7 +724,9 @@ export default function Cart({ isOpen, setIsOpen, user, cart, removeFromCart, up
       }
     } else {
       // Normal discount logic (collection or delivery)
-      const rule = orderType === 'collection' ? discountSettings.collectionDiscount : discountSettings.deliveryDiscount;
+      const rule = (orderType === 'delivery' && isDeliveryAvailable)
+        ? discountSettings.deliveryDiscount
+        : (isCollectionAvailable ? discountSettings.collectionDiscount : null);
       if (rule?.enabled && subtotal >= rule.minOrder) {
         discountPercentage = rule.percentage;
         discountAmount = (subtotal * discountPercentage) / 100;
@@ -695,6 +790,26 @@ export default function Cart({ isOpen, setIsOpen, user, cart, removeFromCart, up
       toast.error('Loading settings... please try again in a moment.');
       return;
     }
+
+    if (!isDeliveryAvailable && orderType === 'delivery') {
+      if (isCollectionAvailable) {
+        toast.error('Delivery orders are currently closed. Switched to collection.');
+        setOrderType('collection');
+      } else {
+        toast.error('Orders are currently paused. Please check back later.');
+      }
+      return;
+    }
+
+    if (!isCollectionAvailable && orderType === 'collection') {
+      if (isDeliveryAvailable) {
+        toast.error('Collection orders are currently closed. Switched to delivery.');
+        setOrderType('delivery');
+      } else {
+        toast.error('Orders are currently paused. Please check back later.');
+      }
+      return;
+    }
     
     if (minOrderWarning) {
       toast.error(minOrderWarning);
@@ -702,55 +817,81 @@ export default function Cart({ isOpen, setIsOpen, user, cart, removeFromCart, up
     }
 
     if (!isOpenNow && selectedTimeSlot === 'ASAP') {
-      toast.error('Restaurant is closed. Please select a scheduled time slot.');
+      toast.error('Restaurant is currently closed. Please select a scheduled time slot.');
       return;
     }
 
-    if ((!user || user.isGuest) && !email.trim()) {
-      toast.error('Please enter your email for order confirmation');
+    // If customer is not signed in and has not filled their contact info, show the clear Sign In vs Guest choice
+    const trimmedName = (customerName || '').trim();
+    const trimmedPhone = (phone || '').trim();
+    const trimmedEmail = (email || '').trim();
+
+    if (!user && !trimmedName && !trimmedPhone) {
+      setShowAuthOrGuestModal(true);
       return;
     }
 
-    if (!customerName.trim()) {
-      toast.error('Please enter your name');
-      return;
+    // Validate fields and build inline validation errors
+    const errors: Record<string, string> = {};
+
+    if (!trimmedName) {
+      errors.name = 'Full name is required';
     }
-    if (!phone.trim()) {
-      toast.error('Please enter your phone number');
-      return;
+
+    if (!trimmedPhone) {
+      errors.phone = 'Phone number is required';
     }
+
+    if ((!user || user.isGuest) && !trimmedEmail) {
+      errors.email = 'Email is required for order receipt & tracking';
+    }
+
     if (orderType === 'delivery') {
-      if (!houseNumber.trim() && !houseName.trim()) {
-        toast.error('Please enter either a house number or house name');
-        return;
+      const trimmedHouseNum = (houseNumber || '').trim();
+      const trimmedHouseNm = (houseName || '').trim();
+      const trimmedStreet = (streetName || '').trim();
+      const trimmedArea = (areaName || '').trim();
+      const trimmedPost = (postcode || '').trim();
+
+      if (!trimmedHouseNum && !trimmedHouseNm) {
+        errors.house = 'House number or name is required';
       }
-      if (!streetName.trim()) {
-        toast.error('Please enter your street name');
-        return;
+      if (!trimmedStreet) {
+        errors.street = 'Street name is required';
       }
-      if (!areaName.trim()) {
-        toast.error('Please enter your area name/town');
-        return;
+      if (!trimmedArea) {
+        errors.area = 'Area/town is required';
       }
-      if (!postcode.trim()) {
-        toast.error('Please enter your postcode');
-        return;
-      }
-      if (!isValidAddress) {
-        toast.error('This postcode is out of coverage.');
-        return;
+      if (!trimmedPost) {
+        errors.postcode = 'Postcode is required';
+      } else if (!isValidAddress) {
+        errors.postcode = 'This postcode is out of coverage';
       }
     }
+
     if (!selectedTimeSlot) {
-      toast.error('Please select a preferred time slot');
+      errors.timeSlot = 'Please select a preferred time slot';
+    }
+
+    if (Object.keys(errors).length > 0) {
+      setValidationErrors(errors);
+      toast.error('Please fill in the highlighted details to proceed');
+      const targetId = errors.name ? 'cart-customer-name' :
+        errors.phone ? 'cart-customer-phone' :
+        errors.email ? 'cart-customer-email' :
+        errors.house ? 'cart-house-number' :
+        errors.street ? 'cart-street-name' :
+        errors.postcode ? 'cart-postcode' :
+        'cart-customer-details';
+      const el = document.getElementById(targetId);
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        el.focus();
+      }
       return;
     }
 
-    if (minOrderWarning) {
-      toast.error(minOrderWarning);
-      return;
-    }
-
+    setValidationErrors({});
     // Opens the Payment Selection Modal with blurred background
     setShowPaymentModal(true);
   };
@@ -770,16 +911,47 @@ export default function Cart({ isOpen, setIsOpen, user, cart, removeFromCart, up
     setIsSubmitting(true);
     try {
       if (paymentMethod === 'pay_online' && !showStripe) {
-        // Create Payment Intent first
+        const isCollection = orderType === 'collection';
+        const formattedAddress = isCollection 
+          ? '' 
+          : `${(houseNumber || '').trim() ? (houseNumber || '').trim() + ' ' : ''}${(houseName || '').trim() ? (houseName || '').trim() + '\n' : ''}${(streetName || '').trim()}\n${(areaName || '').trim()}\n${(postcode || '').trim()}`;
+
+        const pendingOrderPayload = {
+          customerName: (customerName || '').trim() || 'Customer',
+          email: (email || '').trim() || (user?.email || ''),
+          items: sortedCart,
+          subtotal,
+          discountAmount,
+          discountPercentage,
+          stampCardDiscount: isStampRewardEligible && useStampReward ? stampCardDiscount : 0,
+          stampCardPercentage: isStampRewardEligible && useStampReward ? stampRewardPercentage : 0,
+          stampCardApplied: isStampRewardEligible && useStampReward,
+          deliveryFee: isCollection ? 0 : currentDeliveryFee,
+          distance: isCollection ? null : distance,
+          total,
+          orderType,
+          phone: (phone || '').trim(),
+          address: isCollection ? '' : formattedAddress,
+          houseNumber: isCollection ? '' : (houseNumber || '').trim(),
+          houseName: isCollection ? '' : (houseName || '').trim(),
+          streetName: isCollection ? '' : (streetName || '').trim(),
+          areaName: isCollection ? '' : (areaName || '').trim(),
+          postcode: isCollection ? '' : (postcode || '').trim(),
+          selectedTimeSlot,
+          paymentMethod: 'pay_online',
+          orderNotes: (orderNotes || '').trim(),
+        };
+
+        // Create Payment Intent with complete order metadata
         let response;
         try {
           response = await fetch('/api/create-payment-intent', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ amount: total }),
+            body: JSON.stringify({ amount: total, orderData: pendingOrderPayload }),
           });
         } catch (fetchError) {
-          throw new Error('Could not connect to the payment server. If you are on Netlify, please ensure your backend is correctly configured.');
+          throw new Error('Could not connect to the payment server. Please ensure your connection is active.');
         }
 
         const contentType = response.headers.get('content-type');
@@ -795,10 +967,7 @@ export default function Cart({ isOpen, setIsOpen, user, cart, removeFromCart, up
             }
           }
           console.error('Server error response:', responseText);
-          if (responseText.includes('<!DOCTYPE html>') || response.status === 404) {
-            throw new Error(`Payment service not found (404). URL: /api/create-payment-intent. Please check Netlify Functions deployment status.`);
-          }
-          throw new Error(`The payment server returned an error (${response.status}): ${responseText.substring(0, 50)}`);
+          throw new Error(`The payment server returned an error (${response.status}): ${responseText.substring(0, 80)}`);
         }
         
         let data;
@@ -806,39 +975,23 @@ export default function Cart({ isOpen, setIsOpen, user, cart, removeFromCart, up
           data = JSON.parse(responseText);
         } catch (jsonError) {
           console.error('Failed to parse JSON response:', responseText);
-          throw new Error('Received unexpected response format from payment server. Please ensure redirects are correctly configured.');
+          throw new Error('Received unexpected response format from payment server.');
         }
 
         if (data.clientSecret) {
-          const isCollection = orderType === 'collection';
-          const formattedAddress = isCollection 
-            ? '' 
-            : `${houseNumber.trim() ? houseNumber.trim() + ' ' : ''}${houseName.trim() ? houseName.trim() + '\n' : ''}${streetName.trim()}\n${areaName.trim()}\n${postcode.trim()}`;
-          
-          const pendingOrderPayload = {
-            customerName: customerName.trim(),
-            email: email.trim() || (user?.email || ''),
-            items: sortedCart,
-            subtotal,
-            discountAmount,
-            discountPercentage,
-            stampCardDiscount: isStampRewardEligible && useStampReward ? stampCardDiscount : 0,
-            stampCardPercentage: isStampRewardEligible && useStampReward ? stampRewardPercentage : 0,
-            stampCardApplied: isStampRewardEligible && useStampReward,
-            deliveryFee: isCollection ? 0 : currentDeliveryFee,
-            distance: isCollection ? null : distance,
-            total,
-            orderType,
-            phone: phone.trim(),
-            address: isCollection ? '' : formattedAddress,
-            houseNumber: isCollection ? '' : houseNumber.trim(),
-            houseName: isCollection ? '' : houseName.trim(),
-            streetName: isCollection ? '' : streetName.trim(),
-            areaName: isCollection ? '' : areaName.trim(),
-            postcode: isCollection ? '' : postcode.trim(),
-            selectedTimeSlot,
-            paymentMethod: 'pay_online',
-            orderNotes: orderNotes.trim(),
+          if (data.publishableKey && (!stripePublishableKey || stripePublishableKey !== data.publishableKey)) {
+            setStripePublishableKey(data.publishableKey);
+          }
+          const effectiveKey = data.publishableKey || stripePublishableKey || discountSettings?.stripePublishableKey;
+          if (!effectiveKey || effectiveKey.trim() === '') {
+            toast.error('Online payments are currently unavailable. Switching to cash or card upon collection.');
+            setPaymentMethod(orderType === 'collection' ? 'card_on_collection' : 'cash');
+            setIsSubmitting(false);
+            return;
+          }
+
+          const fullPendingOrder = {
+            ...pendingOrderPayload,
             clientSecret: data.clientSecret,
             paymentIntentId: data.paymentIntentId,
             timestamp: Date.now()
@@ -846,8 +999,8 @@ export default function Cart({ isOpen, setIsOpen, user, cart, removeFromCart, up
 
           // Save pending order to both localStorage and sessionStorage
           try {
-            localStorage.setItem('crrave_pending_online_order', JSON.stringify(pendingOrderPayload));
-            sessionStorage.setItem('crrave_pending_online_order', JSON.stringify(pendingOrderPayload));
+            localStorage.setItem('crrave_pending_online_order', JSON.stringify(fullPendingOrder));
+            sessionStorage.setItem('crrave_pending_online_order', JSON.stringify(fullPendingOrder));
           } catch (e) {
             console.error('Storage error:', e);
           }
@@ -878,13 +1031,33 @@ export default function Cart({ isOpen, setIsOpen, user, cart, removeFromCart, up
       return;
     }
 
+    if (!isDeliveryAvailable && orderType === 'delivery') {
+      if (isCollectionAvailable) {
+        toast.error('Delivery orders are currently closed. Please choose collection.');
+        setOrderType('collection');
+      } else {
+        toast.error('Orders are currently paused.');
+      }
+      return;
+    }
+
+    if (!isCollectionAvailable && orderType === 'collection') {
+      if (isDeliveryAvailable) {
+        toast.error('Collection orders are currently closed. Please choose delivery.');
+        setOrderType('delivery');
+      } else {
+        toast.error('Orders are currently paused.');
+      }
+      return;
+    }
+
     isPlacingOrderRef.current = true;
     setIsSubmitting(true);
 
     try {
       const isCollection = orderType === 'collection';
       const formattedAddress = !isCollection 
-        ? `${houseNumber.trim() ? houseNumber.trim() + ' ' : ''}${houseName.trim() ? houseName.trim() + '\n' : ''}${streetName.trim()}\n${areaName.trim()}\n${postcode.trim()}`
+        ? `${(houseNumber || '').trim() ? (houseNumber || '').trim() + ' ' : ''}${(houseName || '').trim() ? (houseName || '').trim() + '\n' : ''}${(streetName || '').trim()}\n${(areaName || '').trim()}\n${(postcode || '').trim()}`
         : '';
 
       let orderUser = user;
@@ -894,12 +1067,12 @@ export default function Cart({ isOpen, setIsOpen, user, cart, removeFromCart, up
           const cred = await signInAnonymously(auth);
           orderUser = {
             uid: cred.user.uid,
-            name: customerName.trim(),
-            email: email.trim() || '',
+            name: (customerName || '').trim() || 'Customer',
+            email: (email || '').trim() || '',
             role: 'customer'
           };
         } catch (error) {
-          console.error('Guest login failed:', error);
+          console.error('Guest login notice:', error);
         }
       }
 
@@ -910,8 +1083,8 @@ export default function Cart({ isOpen, setIsOpen, user, cart, removeFromCart, up
         restaurantId: 'crrave_leyton',
         brand: 'crrave',
         userId: orderUser?.uid || 'guest_' + (cleanPaymentId ? cleanPaymentId.slice(-8) : Date.now()),
-        customerName: (customerName.trim() || 'Customer'),
-        email: email.trim() || orderUser?.email || '',
+        customerName: ((customerName || '').trim() || 'Customer'),
+        email: (email || '').trim() || orderUser?.email || '',
         items: sortedCart,
         subtotal,
         discountAmount,
@@ -924,17 +1097,17 @@ export default function Cart({ isOpen, setIsOpen, user, cart, removeFromCart, up
         total,
         status: 'pending',
         type: orderType,
-        phone: phone.trim(),
+        phone: (phone || '').trim(),
         address: isCollection ? '' : formattedAddress,
-        houseNumber: isCollection ? '' : houseNumber.trim(),
-        houseName: isCollection ? '' : houseName.trim(),
-        streetName: isCollection ? '' : streetName.trim(),
-        areaName: isCollection ? '' : areaName.trim(),
-        postcode: isCollection ? '' : postcode.trim(),
+        houseNumber: isCollection ? '' : (houseNumber || '').trim(),
+        houseName: isCollection ? '' : (houseName || '').trim(),
+        streetName: isCollection ? '' : (streetName || '').trim(),
+        areaName: isCollection ? '' : (areaName || '').trim(),
+        postcode: isCollection ? '' : (postcode || '').trim(),
         timeSlot: selectedTimeSlot,
         paymentMethod: cleanPaymentId ? 'pay_online' : paymentMethod,
         paymentId: cleanPaymentId || null,
-        notes: orderNotes.trim(),
+        notes: (orderNotes || '').trim(),
         estimate: '',
         createdAt: serverTimestamp(),
       };
@@ -961,16 +1134,40 @@ export default function Cart({ isOpen, setIsOpen, user, cart, removeFromCart, up
         } catch (srvErr) {
           console.warn('Server order creation warning:', srvErr);
         }
+      } else {
+        // 1b. For cash / collection orders, record order via backend API for guaranteed persistence
+        try {
+          const createResp = await fetch('/api/create-order', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              orderId: finalOrderId,
+              orderData: orderPayload,
+            }),
+          });
+          if (createResp.ok) {
+            const createData = await createResp.json();
+            if (createData.orderId) {
+              finalOrderId = createData.orderId;
+            }
+          }
+        } catch (serverErr) {
+          console.warn('Server create-order fallback warning:', serverErr);
+        }
       }
 
       // 2. Ensure Firestore has document written with deterministic ID using setDoc with merge
-      const docRef = doc(db, 'orders', finalOrderId);
-      await setDoc(docRef, orderPayload, { merge: true });
+      try {
+        const docRef = doc(db, 'orders', finalOrderId);
+        await setDoc(docRef, orderPayload, { merge: true });
+      } catch (fsErr) {
+        console.warn('Client Firestore write warning:', fsErr);
+      }
 
-      // 3. Update customer StampCard loyalty progress
-      if (orderUser && !orderUser.isGuest) {
+      // 3. Update customer StampCard loyalty progress for registered members only
+      if (user && !user.isGuest && user.uid) {
         try {
-          const userDocRef = doc(db, 'users', orderUser.uid);
+          const userDocRef = doc(db, 'users', user.uid);
           if (isStampRewardEligible && useStampReward) {
             await updateDoc(userDocRef, {
               stamps: 0,
@@ -984,7 +1181,7 @@ export default function Cart({ isOpen, setIsOpen, user, cart, removeFromCart, up
             });
           }
         } catch (stampErr) {
-          console.warn('Error updating customer stamp card:', stampErr);
+          console.warn('Notice updating customer stamp card:', stampErr);
         }
       }
 
@@ -1002,13 +1199,13 @@ export default function Cart({ isOpen, setIsOpen, user, cart, removeFromCart, up
         items: sortedCart,
         total,
         orderType,
-        customerName: customerName.trim(),
-        phone: phone.trim(),
-        postcode: postcode.trim(),
-        streetName: streetName.trim(),
-        houseNumber: houseNumber.trim(),
-        houseName: houseName.trim(),
-        areaName: areaName.trim(),
+        customerName: (customerName || '').trim(),
+        phone: (phone || '').trim(),
+        postcode: (postcode || '').trim(),
+        streetName: (streetName || '').trim(),
+        houseNumber: (houseNumber || '').trim(),
+        houseName: (houseName || '').trim(),
+        areaName: (areaName || '').trim(),
         createdAt: new Date().toISOString()
       };
       try {
@@ -1017,22 +1214,17 @@ export default function Cart({ isOpen, setIsOpen, user, cart, removeFromCart, up
         let list = existingGuestOrders ? JSON.parse(existingGuestOrders) : [];
         list = [lastOrderData, ...list.filter((o: any) => o.id !== finalOrderId)].slice(0, 10);
         localStorage.setItem('crrave_guest_orders', JSON.stringify(list));
-              } catch (e) {
+      } catch (e) {
         console.error('Error saving local order history:', e);
       }
       setLastOrder(lastOrderData);
-      
-      const orderSummary = sortedCart.map(item => `${item.quantity}x ${item.name}${item.variant ? ` (${item.variant})` : ''}`).join('\n');
-
-      // Order email flow: Reduced per requirement. Customer receives the 1st confirmation
-      // email once the restaurant accepts the order (with prep/delivery estimate), and the
-      // 2nd notification email when the order is ready or out for delivery.
 
       clearCart();
       setShowStripe(false);
       toast.success('Order sent to kitchen!');
     } catch (error) {
-      handleFirestoreError(error, OperationType.CREATE, 'orders');
+      console.error('Order placement error:', error);
+      toast.error(error instanceof Error ? error.message : 'Unable to complete order. Please try again.');
     } finally {
       setIsSubmitting(false);
       isPlacingOrderRef.current = false;
@@ -1042,8 +1234,9 @@ export default function Cart({ isOpen, setIsOpen, user, cart, removeFromCart, up
   return (
     <AnimatePresence>
       {isOpen && (
-        <>
+        <div key="cart-drawer-overlay">
           <motion.div
+            key="cart-backdrop"
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
@@ -1051,6 +1244,7 @@ export default function Cart({ isOpen, setIsOpen, user, cart, removeFromCart, up
             className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[60]"
           />
           <motion.div
+            key="cart-drawer-panel"
             initial={{ x: '100%' }}
             animate={{ x: 0 }}
             exit={{ x: '100%' }}
@@ -1200,150 +1394,6 @@ export default function Cart({ isOpen, setIsOpen, user, cart, removeFromCart, up
                 </div>
               ) : (
                 <>
-                  {/* Customer Loyalty StampCard Component */}
-                  {stampCardEnabled && (
-                    <div className="bg-gradient-to-br from-[#161616] via-[#121212] to-[#1c140d] border border-orange-500/30 rounded-3xl p-4 sm:p-5 shadow-xl relative overflow-hidden mb-4">
-                      <div className="absolute top-0 right-0 w-32 h-32 bg-orange-600/10 rounded-full blur-2xl pointer-events-none" />
-
-                      {/* Header */}
-                      <div className="flex items-center justify-between gap-2 mb-3">
-                        <div className="flex items-center gap-2">
-                          <div className="p-1.5 bg-orange-500/20 rounded-xl text-orange-400">
-                            <Gift size={16} />
-                          </div>
-                          <div>
-                            <h4 className="text-xs font-black uppercase tracking-wider text-white flex items-center gap-1.5">
-                              CRRAVE LOYALTY STAMPCARD
-                            </h4>
-                            <p className="text-[10px] text-gray-400">
-                              Saves {stampPercentagePerOrder}% per order • <span className="text-orange-400 font-bold">{stampRewardPercentage}% OFF</span> 5th order
-                            </p>
-                          </div>
-                        </div>
-                        
-                        {(!user || user.isGuest) && (
-                          <button
-                            type="button"
-                            onClick={() => setAuthModalOpen && setAuthModalOpen(true)}
-                            className="text-[10px] font-black uppercase tracking-wider px-2.5 py-1 bg-orange-600 hover:bg-orange-700 text-white rounded-full transition-all shrink-0 cursor-pointer shadow-md"
-                          >
-                            Sign In
-                          </button>
-                        )}
-                      </div>
-
-                      {/* Stamp Slots (5 total: 4 order stamps + 1 reward slot) */}
-                      <div className="grid grid-cols-5 gap-2 my-3">
-                        {[1, 2, 3, 4].map((slotNum) => {
-                          const isStamped = (user && !user.isGuest) && userStamps >= slotNum;
-                          const isNext = (user && !user.isGuest) && userStamps === slotNum - 1;
-                          return (
-                            <div
-                              key={slotNum}
-                              className={cn(
-                                "aspect-square rounded-2xl flex flex-col items-center justify-center p-1 text-center transition-all border relative",
-                                isStamped
-                                  ? "bg-gradient-to-b from-orange-500/30 to-amber-600/20 border-orange-500 text-white shadow-lg shadow-orange-500/20"
-                                  : isNext
-                                  ? "bg-white/5 border-orange-500/50 border-dashed text-orange-400 animate-pulse"
-                                  : "bg-white/[0.03] border-white/10 text-gray-600"
-                              )}
-                            >
-                              {isStamped ? (
-                                <>
-                                  <div className="w-5 h-5 rounded-full bg-orange-500 text-white flex items-center justify-center shadow">
-                                    <Check size={12} strokeWidth={3} />
-                                  </div>
-                                  <span className="text-[9px] font-black uppercase mt-1 text-orange-300">
-                                    #{slotNum}
-                                  </span>
-                                </>
-                              ) : (
-                                <>
-                                  <span className="text-xs font-black opacity-60">#{slotNum}</span>
-                                  <span className="text-[8px] font-bold uppercase tracking-tight opacity-50 mt-0.5">
-                                    +{stampPercentagePerOrder}%
-                                  </span>
-                                </>
-                              )}
-                            </div>
-                          );
-                        })}
-
-                        {/* Slot 5: The 5th Order Reward */}
-                        <div
-                          className={cn(
-                            "aspect-square rounded-2xl flex flex-col items-center justify-center p-1 text-center transition-all border relative",
-                            isStampRewardEligible
-                              ? "bg-gradient-to-b from-amber-500/40 via-orange-500/30 to-amber-600/40 border-amber-400 text-white shadow-xl shadow-amber-500/30 ring-2 ring-amber-400/50 animate-pulse"
-                              : "bg-white/[0.03] border-white/10 text-gray-500"
-                          )}
-                        >
-                          <Sparkles size={16} className={isStampRewardEligible ? "text-amber-300 animate-spin" : "text-gray-600"} />
-                          <span className={cn(
-                            "text-[9px] font-black uppercase tracking-tighter mt-1 leading-none",
-                            isStampRewardEligible ? "text-amber-200" : "text-gray-500"
-                          )}>
-                            {stampRewardPercentage}% OFF
-                          </span>
-                          <span className="text-[7px] uppercase font-bold tracking-tight text-gray-400 mt-0.5">
-                            5th Order
-                          </span>
-                        </div>
-                      </div>
-
-                      {/* Status Message / Action */}
-                      {(!user || user.isGuest) ? (
-                        <div className="bg-black/40 border border-white/5 rounded-2xl p-2.5 flex items-center justify-between gap-2">
-                          <p className="text-[11px] text-gray-400 leading-tight">
-                            Sign in with phone to collect stamps & claim <span className="text-orange-400 font-bold">{stampRewardPercentage}% OFF</span>!
-                          </p>
-                          <button
-                            type="button"
-                            onClick={() => setAuthModalOpen && setAuthModalOpen(true)}
-                            className="px-3 py-1.5 bg-orange-600 hover:bg-orange-700 text-white rounded-xl text-[10px] font-black uppercase tracking-wider shrink-0 transition-colors cursor-pointer"
-                          >
-                            Sign In
-                          </button>
-                        </div>
-                      ) : isStampRewardEligible ? (
-                        <div className="bg-gradient-to-r from-amber-500/20 to-orange-500/20 border border-amber-500/40 rounded-2xl p-3 space-y-2">
-                          <div className="flex items-center justify-between">
-                            <div className="flex items-center gap-1.5 text-amber-300">
-                              <Sparkles size={14} className="animate-spin" />
-                              <span className="text-xs font-black uppercase tracking-wide">
-                                5th Order Reward Unlocked!
-                              </span>
-                            </div>
-                            <span className="text-xs font-black text-white bg-amber-500/30 px-2 py-0.5 rounded-full border border-amber-400/40">
-                              {stampRewardPercentage}% OFF
-                            </span>
-                          </div>
-                          <label className="flex items-center gap-2 cursor-pointer pt-1">
-                            <input
-                              type="checkbox"
-                              checked={useStampReward}
-                              onChange={(e) => setUseStampReward(e.target.checked)}
-                              className="w-4 h-4 rounded text-orange-600 focus:ring-orange-500 bg-black/40 border-white/20"
-                            />
-                            <span className="text-[11px] font-bold text-white">
-                              Apply {stampRewardPercentage}% StampCard discount to this order (-{formatPrice((subtotal * stampRewardPercentage) / 100)})
-                            </span>
-                          </label>
-                        </div>
-                      ) : (
-                        <div className="bg-black/40 border border-white/5 rounded-2xl p-2.5 flex items-center justify-between text-[11px]">
-                          <span className="text-gray-300">
-                            <strong className="text-white">{userStamps} of 4</strong> stamps collected.
-                          </span>
-                          <span className="text-orange-400 font-bold">
-                            {4 - userStamps} order{4 - userStamps > 1 ? 's' : ''} until {stampRewardPercentage}% OFF!
-                          </span>
-                        </div>
-                      )}
-                    </div>
-                  )}
-
                   <div className="space-y-4">
                     {sortedCart.map((item, idx) => (
                       <div key={`${item.id}-${idx}`} className="flex gap-4 bg-white/5 p-4 rounded-2xl border border-white/5">
@@ -1385,79 +1435,184 @@ export default function Cart({ isOpen, setIsOpen, user, cart, removeFromCart, up
                   </div>
 
                   <div className="space-y-6 pt-6 border-t border-white/10">
-                    <div className="grid grid-cols-2 gap-2">
-                      <button
-                        onClick={() => {
-                          setOrderType('collection');
-                          setHouseNumber('');
-                          setHouseName('');
-                          setStreetName('');
-                          setAreaName('');
-                          setPostcode('');
-                        }}
-                        className={cn(
-                          "flex flex-col items-center gap-2 p-4 rounded-2xl border transition-all",
-                          orderType === 'collection' 
-                            ? "bg-orange-500/10 border-orange-500 text-orange-500" 
-                            : "bg-white/5 border-white/10 text-gray-400 hover:bg-white/10"
-                        )}
-                      >
-                        <Store size={20} />
-                        <span className="text-xs font-bold">COLLECTION</span>
-                      </button>
-                      <button
-                        onClick={() => setOrderType('delivery')}
-                        className={cn(
-                          "flex flex-col items-center gap-2 p-4 rounded-2xl border transition-all",
-                          orderType === 'delivery' 
-                            ? "bg-orange-500/10 border-orange-500 text-orange-500" 
-                            : "bg-white/5 border-white/10 text-gray-400 hover:bg-white/10"
-                        )}
-                      >
-                        <Truck size={20} />
-                        <span className="text-xs font-bold">DELIVERY</span>
-                      </button>
-                    </div>
+                    {isCollectionAvailable && isDeliveryAvailable ? (
+                      <div className="grid grid-cols-2 gap-2">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setOrderType('collection');
+                            setHouseNumber('');
+                            setHouseName('');
+                            setStreetName('');
+                            setAreaName('');
+                            setPostcode('');
+                          }}
+                          className={cn(
+                            "flex flex-col items-center gap-2 p-4 rounded-2xl border transition-all cursor-pointer",
+                            orderType === 'collection' 
+                              ? "bg-orange-500/10 border-orange-500 text-orange-500" 
+                              : "bg-white/5 border-white/10 text-gray-400 hover:bg-white/10"
+                          )}
+                        >
+                          <Store size={20} />
+                          <span className="text-xs font-bold">COLLECTION</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setOrderType('delivery')}
+                          className={cn(
+                            "flex flex-col items-center gap-2 p-4 rounded-2xl border transition-all cursor-pointer",
+                            orderType === 'delivery' 
+                              ? "bg-orange-500/10 border-orange-500 text-orange-500" 
+                              : "bg-white/5 border-white/10 text-gray-400 hover:bg-white/10"
+                          )}
+                        >
+                          <Truck size={20} />
+                          <span className="text-xs font-bold">DELIVERY</span>
+                        </button>
+                      </div>
+                    ) : isCollectionAvailable && !isDeliveryAvailable ? null : !isCollectionAvailable && isDeliveryAvailable ? (
+                      <div className="p-4 bg-orange-500/10 border border-orange-500/20 rounded-2xl flex items-center justify-between gap-3 text-orange-400">
+                        <div className="flex items-center gap-2.5">
+                          <Truck size={20} className="text-orange-500" />
+                          <div>
+                            <span className="text-xs font-black uppercase tracking-wider block text-white">DELIVERY ONLY</span>
+                            <span className="text-[10px] text-gray-400">Collection orders are temporarily closed.</span>
+                          </div>
+                        </div>
+                        <span className="px-2.5 py-1 bg-orange-500/20 border border-orange-500/30 rounded-full text-[10px] font-bold text-orange-300 uppercase">
+                          Delivery Active
+                        </span>
+                      </div>
+                    ) : (
+                      <div className="p-4 bg-red-500/10 border border-red-500/20 rounded-2xl flex items-center justify-between gap-3 text-red-400">
+                        <div className="flex items-center gap-2.5">
+                          <AlertTriangle size={20} className="text-red-500" />
+                          <div>
+                            <span className="text-xs font-black uppercase tracking-wider block text-white">ORDERS TEMPORARILY PAUSED</span>
+                            <span className="text-[10px] text-gray-400">Both collection and delivery are currently unavailable.</span>
+                          </div>
+                        </div>
+                      </div>
+                    )}
 
-                    <div className="space-y-4">
+                    <div id="cart-customer-details" className="space-y-4">
+                      {user && !user.isGuest && (
+                        <div className="p-3.5 bg-orange-500/10 border border-orange-500/30 rounded-2xl flex items-center justify-between gap-3">
+                          <div className="flex items-center gap-2.5">
+                            <div className="w-8 h-8 rounded-full bg-orange-500 text-white flex items-center justify-center font-black text-xs shrink-0 shadow">
+                              <Check size={16} strokeWidth={3} />
+                            </div>
+                            <div>
+                              <span className="text-xs font-black uppercase tracking-wider block text-white">
+                                Ordering as {user.name || user.phone || 'Member'}
+                              </span>
+                              <span className="text-[10px] text-orange-300 font-bold">
+                                ⭐ Member discount active
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+
                       <div>
-                        <label className="text-[10px] uppercase tracking-widest text-gray-500 font-bold mb-2 block">
-                          Full Name
-                        </label>
+                        <div className="flex items-center justify-between mb-1.5">
+                          <label className="text-[10px] uppercase tracking-widest text-gray-400 font-bold block">
+                            Full Name <span className="text-orange-500 font-bold">*</span>
+                          </label>
+                          {validationErrors.name && (
+                            <span className="text-[10px] text-orange-400 font-bold">{validationErrors.name}</span>
+                          )}
+                        </div>
                         <input
+                          id="cart-customer-name"
                           type="text"
                           value={customerName}
-                          onChange={(e) => setCustomerName(e.target.value)}
+                          onChange={(e) => {
+                            setCustomerName(e.target.value);
+                            if (validationErrors.name) {
+                              setValidationErrors((prev) => {
+                                const next = { ...prev };
+                                delete next.name;
+                                return next;
+                              });
+                            }
+                          }}
                           placeholder="e.g. John Doe"
-                          className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-orange-500 transition-colors"
+                          className={cn(
+                            "w-full bg-white/5 border rounded-xl px-4 py-3 text-sm focus:outline-none transition-colors",
+                            validationErrors.name 
+                              ? "border-orange-500 ring-2 ring-orange-500/30 bg-orange-500/10" 
+                              : "border-white/10 focus:border-orange-500"
+                          )}
                         />
                       </div>
 
                       {(!user || user.isGuest) && (
                         <div>
-                          <label className="text-[10px] uppercase tracking-widest text-gray-500 font-bold mb-2 block">
-                            Email Address
-                          </label>
+                          <div className="flex items-center justify-between mb-1.5">
+                            <label className="text-[10px] uppercase tracking-widest text-gray-400 font-bold block">
+                              Email Address <span className="text-orange-500 font-bold">*</span>
+                            </label>
+                            {validationErrors.email && (
+                              <span className="text-[10px] text-orange-400 font-bold">{validationErrors.email}</span>
+                            )}
+                          </div>
                           <input
+                            id="cart-customer-email"
                             type="email"
                             value={email}
-                            onChange={(e) => setEmail(e.target.value)}
-                            placeholder="e.g. john@example.com"
-                            className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-orange-500 transition-colors"
+                            onChange={(e) => {
+                              setEmail(e.target.value);
+                              if (validationErrors.email) {
+                                setValidationErrors((prev) => {
+                                  const next = { ...prev };
+                                  delete next.email;
+                                  return next;
+                                });
+                              }
+                            }}
+                            placeholder="e.g. john@example.com (for order receipt)"
+                            className={cn(
+                              "w-full bg-white/5 border rounded-xl px-4 py-3 text-sm focus:outline-none transition-colors",
+                              validationErrors.email 
+                                ? "border-orange-500 ring-2 ring-orange-500/30 bg-orange-500/10" 
+                                : "border-white/10 focus:border-orange-500"
+                            )}
                           />
                         </div>
                       )}
 
                       <div>
-                        <label className="text-[10px] uppercase tracking-widest text-gray-500 font-bold mb-2 block">
-                          Phone Number
-                        </label>
+                        <div className="flex items-center justify-between mb-1.5">
+                          <label className="text-[10px] uppercase tracking-widest text-gray-400 font-bold block">
+                            Phone Number <span className="text-orange-500 font-bold">*</span>
+                          </label>
+                          {validationErrors.phone && (
+                            <span className="text-[10px] text-orange-400 font-bold">{validationErrors.phone}</span>
+                          )}
+                        </div>
                         <input
+                          id="cart-customer-phone"
                           type="tel"
                           value={phone}
-                          onChange={(e) => setPhone(e.target.value)}
-                          placeholder="e.g. 07123456789"
-                          className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-orange-500 transition-colors"
+                          onChange={(e) => {
+                            setPhone(e.target.value);
+                            if (validationErrors.phone) {
+                              setValidationErrors((prev) => {
+                                const next = { ...prev };
+                                delete next.phone;
+                                return next;
+                              });
+                            }
+                          }}
+                          placeholder="e.g. 07123456789 (for order updates)"
+                          className={cn(
+                            "w-full bg-white/5 border rounded-xl px-4 py-3 text-sm focus:outline-none transition-colors",
+                            validationErrors.phone 
+                              ? "border-orange-500 ring-2 ring-orange-500/30 bg-orange-500/10" 
+                              : "border-white/10 focus:border-orange-500"
+                          )}
                         />
                       </div>
 
@@ -1470,68 +1625,158 @@ export default function Cart({ isOpen, setIsOpen, user, cart, removeFromCart, up
                         >
                           <div className="grid grid-cols-2 gap-4">
                             <div>
-                              <label className="text-[10px] uppercase tracking-widest text-gray-500 font-bold mb-2 block">
-                                House No:
-                              </label>
+                              <div className="flex items-center justify-between mb-1.5">
+                                <label className="text-[10px] uppercase tracking-widest text-gray-400 font-bold block">
+                                  House No:
+                                </label>
+                                {validationErrors.house && (
+                                  <span className="text-[10px] text-orange-400 font-bold">{validationErrors.house}</span>
+                                )}
+                              </div>
                               <input
+                                id="cart-house-number"
                                 type="text"
                                 inputMode="numeric"
                                 value={houseNumber}
-                                onChange={(e) => setHouseNumber(e.target.value.replace(/[^0-9]/g, ''))}
+                                onChange={(e) => {
+                                  setHouseNumber(e.target.value.replace(/[^0-9]/g, ''));
+                                  if (validationErrors.house) {
+                                    setValidationErrors((prev) => {
+                                      const next = { ...prev };
+                                      delete next.house;
+                                      return next;
+                                    });
+                                  }
+                                }}
                                 placeholder="e.g. 12"
-                                className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-orange-500 transition-colors"
+                                className={cn(
+                                  "w-full bg-white/5 border rounded-xl px-4 py-3 text-sm focus:outline-none transition-colors",
+                                  validationErrors.house 
+                                    ? "border-orange-500 ring-2 ring-orange-500/30 bg-orange-500/10" 
+                                    : "border-white/10 focus:border-orange-500"
+                                )}
                               />
                             </div>
                             <div>
-                              <label className="text-[10px] uppercase tracking-widest text-gray-500 font-bold mb-2 block">
+                              <label className="text-[10px] uppercase tracking-widest text-gray-400 font-bold mb-1.5 block">
                                 House Name
                               </label>
                               <input
+                                id="cart-house-name"
                                 type="text"
                                 value={houseName}
-                                onChange={(e) => setHouseName(e.target.value)}
-                                placeholder="e.g. Oak Cottage"
+                                onChange={(e) => {
+                                  setHouseName(e.target.value);
+                                  if (validationErrors.house) {
+                                    setValidationErrors((prev) => {
+                                      const next = { ...prev };
+                                      delete next.house;
+                                      return next;
+                                    });
+                                  }
+                                }}
+                                placeholder="e.g. Flat 3"
                                 className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-orange-500 transition-colors"
                               />
                             </div>
                           </div>
 
                           <div>
-                            <label className="text-[10px] uppercase tracking-widest text-gray-500 font-bold mb-2 block">
-                              Street Name
-                            </label>
+                            <div className="flex items-center justify-between mb-1.5">
+                              <label className="text-[10px] uppercase tracking-widest text-gray-400 font-bold block">
+                                Street Name <span className="text-orange-500 font-bold">*</span>
+                              </label>
+                              {validationErrors.street && (
+                                <span className="text-[10px] text-orange-400 font-bold">{validationErrors.street}</span>
+                              )}
+                            </div>
                             <input
+                              id="cart-street-name"
                               type="text"
                               value={streetName}
-                              onChange={(e) => setStreetName(e.target.value)}
+                              onChange={(e) => {
+                                setStreetName(e.target.value);
+                                if (validationErrors.street) {
+                                  setValidationErrors((prev) => {
+                                    const next = { ...prev };
+                                    delete next.street;
+                                    return next;
+                                  });
+                                }
+                              }}
                               placeholder="e.g. Lea Bridge Road"
-                              className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-orange-500 transition-colors"
+                              className={cn(
+                                "w-full bg-white/5 border rounded-xl px-4 py-3 text-sm focus:outline-none transition-colors",
+                                validationErrors.street 
+                                  ? "border-orange-500 ring-2 ring-orange-500/30 bg-orange-500/10" 
+                                  : "border-white/10 focus:border-orange-500"
+                              )}
                             />
                           </div>
 
                           <div>
-                            <label className="text-[10px] uppercase tracking-widest text-gray-500 font-bold mb-2 block">
-                              Area Name
-                            </label>
+                            <div className="flex items-center justify-between mb-1.5">
+                              <label className="text-[10px] uppercase tracking-widest text-gray-400 font-bold block">
+                                Area Name <span className="text-orange-500 font-bold">*</span>
+                              </label>
+                              {validationErrors.area && (
+                                <span className="text-[10px] text-orange-400 font-bold">{validationErrors.area}</span>
+                              )}
+                            </div>
                             <input
+                              id="cart-area-name"
                               type="text"
                               value={areaName}
-                              onChange={(e) => setAreaName(e.target.value)}
-                              placeholder="e.g. London"
-                              className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-orange-500 transition-colors"
+                              onChange={(e) => {
+                                setAreaName(e.target.value);
+                                if (validationErrors.area) {
+                                  setValidationErrors((prev) => {
+                                    const next = { ...prev };
+                                    delete next.area;
+                                    return next;
+                                  });
+                                }
+                              }}
+                              placeholder="e.g. Leyton, London"
+                              className={cn(
+                                "w-full bg-white/5 border rounded-xl px-4 py-3 text-sm focus:outline-none transition-colors",
+                                validationErrors.area 
+                                  ? "border-orange-500 ring-2 ring-orange-500/30 bg-orange-500/10" 
+                                  : "border-white/10 focus:border-orange-500"
+                              )}
                             />
                           </div>
 
                           <div>
-                            <label className="text-[10px] uppercase tracking-widest text-gray-500 font-bold mb-2 block">
-                              Postcode
-                            </label>
+                            <div className="flex items-center justify-between mb-1.5">
+                              <label className="text-[10px] uppercase tracking-widest text-gray-400 font-bold block">
+                                Postcode <span className="text-orange-500 font-bold">*</span>
+                              </label>
+                              {validationErrors.postcode && (
+                                <span className="text-[10px] text-orange-400 font-bold">{validationErrors.postcode}</span>
+                              )}
+                            </div>
                             <input
+                              id="cart-postcode"
                               type="text"
                               value={postcode}
-                              onChange={(e) => setPostcode(e.target.value.toUpperCase())}
-                              placeholder="e.g. SW1A 1AA"
-                              className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-orange-500 transition-colors uppercase"
+                              onChange={(e) => {
+                                setPostcode(e.target.value.toUpperCase());
+                                if (validationErrors.postcode) {
+                                  setValidationErrors((prev) => {
+                                    const next = { ...prev };
+                                    delete next.postcode;
+                                    return next;
+                                  });
+                                }
+                              }}
+                              placeholder="e.g. E10 6AE"
+                              className={cn(
+                                "w-full bg-white/5 border rounded-xl px-4 py-3 text-sm focus:outline-none transition-colors uppercase",
+                                validationErrors.postcode 
+                                  ? "border-orange-500 ring-2 ring-orange-500/30 bg-orange-500/10" 
+                                  : "border-white/10 focus:border-orange-500"
+                              )}
                             />
                             {orderType === 'delivery' && postcode.trim().length >= 2 && !isValidAddress && (
                               <p className="text-red-500 text-[11px] font-bold mt-1.5 flex items-center gap-1.5">
@@ -1684,14 +1929,6 @@ export default function Cart({ isOpen, setIsOpen, user, cart, removeFromCart, up
                             </div>
                           </div>
                         )}
-
-                        {/* When ASAP is active, show confirmation indicator */}
-                        {selectedTimeSlot === 'ASAP' && !isScheduling && isOpenNow && (
-                          <div className="flex items-center gap-2 p-3 bg-orange-500/10 border border-orange-500/20 rounded-xl text-xs text-orange-300 font-medium">
-                            <Zap size={14} className="text-orange-400 shrink-0" />
-                            <span>Fastest preparation selected. Kitchen prepares your order immediately upon order confirmation.</span>
-                          </div>
-                        )}
                       </div>
 
                       <div>
@@ -1714,18 +1951,8 @@ export default function Cart({ isOpen, setIsOpen, user, cart, removeFromCart, up
 
             {!orderSuccess && cart.length > 0 && (
               <div className="p-6 bg-white/5 border-t border-white/10 space-y-4">
-                {showStripe && clientSecret ? (
-                  <Elements stripe={stripePromise} options={{ clientSecret }}>
-                    <CheckoutForm 
-                      amount={total} 
-                      onSuccess={(id) => placeOrder(id)} 
-                      onCancel={() => setShowStripe(false)} 
-                    />
-                  </Elements>
-                ) : (
-                  <>
-                    <div className="space-y-3">
-                      <div className="flex justify-between items-center text-sm">
+                <div className="space-y-3">
+                  <div className="flex justify-between items-center text-sm">
                         <span className="text-gray-400 font-medium">Subtotal</span>
                         <span className="font-bold">{formatPrice(subtotal)}</span>
                       </div>
@@ -1824,7 +2051,7 @@ export default function Cart({ isOpen, setIsOpen, user, cart, removeFromCart, up
                           <span className="text-[10px] font-black uppercase tracking-widest">{minOrderWarning}</span>
                         </motion.div>
                       ) : (
-                        orderType === 'delivery' && discountSettings?.freeDeliveryEnabled && subtotal < discountSettings.freeDeliveryMinOrder && (
+                        isDeliveryAvailable && orderType === 'delivery' && discountSettings?.freeDeliveryEnabled && subtotal < discountSettings.freeDeliveryMinOrder && (
                           <div className="p-3 bg-blue-500/10 border border-blue-500/20 rounded-xl flex items-center justify-between gap-2 text-blue-400">
                             <div className="flex items-center gap-2">
                               <Truck size={14} />
@@ -1841,10 +2068,10 @@ export default function Cart({ isOpen, setIsOpen, user, cart, removeFromCart, up
                     </div>
                     <button
                       onClick={handleCheckout}
-                      disabled={isSubmitting || !discountSettings || (orderType === 'delivery' && (!isValidAddress || deliveryFee === 0)) || !!minOrderWarning || (!isOpenNow && selectedTimeSlot === 'ASAP') || selectedTimeSlot === ''}
+                      disabled={isSubmitting || !discountSettings || (!isCollectionAvailable && !isDeliveryAvailable) || (orderType === 'collection' && !isCollectionAvailable) || (orderType === 'delivery' && (!isDeliveryAvailable || !isValidAddress)) || !!minOrderWarning || (!isOpenNow && selectedTimeSlot === 'ASAP') || selectedTimeSlot === ''}
                       className={cn(
                         "w-full py-4 rounded-2xl font-bold flex items-center justify-center gap-2 transition-all shadow-lg",
-                        (isSubmitting || !discountSettings || (orderType === 'delivery' && (!isValidAddress || deliveryFee === 0)) || !!minOrderWarning || (!isOpenNow && selectedTimeSlot === 'ASAP') || selectedTimeSlot === '')
+                        (isSubmitting || !discountSettings || (!isCollectionAvailable && !isDeliveryAvailable) || (orderType === 'collection' && !isCollectionAvailable) || (orderType === 'delivery' && (!isDeliveryAvailable || !isValidAddress)) || !!minOrderWarning || (!isOpenNow && selectedTimeSlot === 'ASAP') || selectedTimeSlot === '')
                           ? "bg-white/5 text-gray-500 cursor-not-allowed"
                           : "bg-orange-600 hover:bg-orange-700 text-white shadow-orange-600/20"
                       )}
@@ -1855,6 +2082,21 @@ export default function Cart({ isOpen, setIsOpen, user, cart, removeFromCart, up
                         <>
                           <Loader2 className="w-5 h-5 animate-spin" />
                           LOADING...
+                        </>
+                      ) : (!isCollectionAvailable && !isDeliveryAvailable) ? (
+                        <>
+                          <AlertTriangle size={20} />
+                          ORDERS PAUSED
+                        </>
+                      ) : (orderType === 'collection' && !isCollectionAvailable) ? (
+                        <>
+                          <AlertTriangle size={20} />
+                          COLLECTION CLOSED
+                        </>
+                      ) : (orderType === 'delivery' && !isDeliveryAvailable) ? (
+                        <>
+                          <AlertTriangle size={20} />
+                          DELIVERY CLOSED
                         </>
                       ) : minOrderWarning ? (
                         <>
@@ -1871,26 +2113,35 @@ export default function Cart({ isOpen, setIsOpen, user, cart, removeFromCart, up
                           <Clock size={20} />
                           SELECT TIME
                         </>
+                      ) : (!user && !customerName.trim() && !phone.trim()) ? (
+                        <>
+                          <User size={20} />
+                          CHOOSE GUEST OR SIGN IN TO ORDER
+                        </>
+                      ) : (!customerName.trim() || !phone.trim()) ? (
+                        <>
+                          <User size={20} />
+                          ENTER DETAILS TO ORDER
+                        </>
                       ) : (
                         <>
                           <CreditCard size={20} />
-                          PLACE ORDER
+                          PROCEED TO PAYMENT • {formatPrice(total)}
                         </>
                       )}
                     </button>
                     <p className="text-[10px] text-center text-gray-500 uppercase tracking-widest">
                       Secure checkout powered by Stripe
                     </p>
-                  </>
+                  </div>
                 )}
-              </div>
-            )}
-          </motion.div>
-        </>
+            </motion.div>
+        </div>
       )}
 
       {showPaymentModal && (
         <motion.div
+          key="payment-method-modal-overlay"
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
@@ -1900,6 +2151,7 @@ export default function Cart({ isOpen, setIsOpen, user, cart, removeFromCart, up
           }}
         >
           <motion.div
+            key="payment-method-modal-dialog"
             initial={{ scale: 0.95, opacity: 0, y: 20 }}
             animate={{ scale: 1, opacity: 1, y: 0 }}
             exit={{ scale: 0.95, opacity: 0, y: 20 }}
@@ -1921,19 +2173,39 @@ export default function Cart({ isOpen, setIsOpen, user, cart, removeFromCart, up
               </button>
             </div>
 
-            {showStripe && clientSecret ? (
+            {showStripe && clientSecret && (stripePublishableKey || discountSettings?.stripePublishableKey) ? (
               <div className="py-2 space-y-4">
                 <p className="text-xs text-gray-400 font-bold">Complete your online payment with Stripe:</p>
-                <Elements stripe={stripePromise} options={{ clientSecret }}>
-                  <CheckoutForm 
-                    amount={total} 
-                    onSuccess={(id) => {
-                      setShowPaymentModal(false);
-                      placeOrder(id);
-                    }} 
-                    onCancel={() => setShowStripe(false)} 
-                  />
-                </Elements>
+                <PaymentErrorBoundary
+                  onFallbackToCash={() => {
+                    setShowStripe(false);
+                    setPaymentMethod(orderType === 'collection' ? 'card_on_collection' : 'cash');
+                  }}
+                  onCancel={() => setShowStripe(false)}
+                >
+                  {activeStripePromise ? (
+                    <Elements stripe={activeStripePromise} options={stripeElementsOptions}>
+                      <CheckoutForm 
+                        amount={total} 
+                        customerName={customerName}
+                        onSuccess={(id) => {
+                          setShowPaymentModal(false);
+                          placeOrder(id);
+                        }} 
+                        onCancel={() => {
+                          setShowStripe(false);
+                          localStorage.removeItem('crrave_pending_online_order');
+                          sessionStorage.removeItem('crrave_pending_online_order');
+                        }} 
+                      />
+                    </Elements>
+                  ) : (
+                    <div className="flex flex-col items-center justify-center p-8 text-orange-500 space-y-3">
+                      <Loader2 className="animate-spin" size={32} />
+                      <span className="text-xs text-gray-400 font-bold uppercase tracking-wider">Loading Stripe Payments...</span>
+                    </div>
+                  )}
+                </PaymentErrorBoundary>
               </div>
             ) : (
               <>
@@ -1943,6 +2215,7 @@ export default function Cart({ isOpen, setIsOpen, user, cart, removeFromCart, up
                   <div className="grid grid-cols-1 gap-2.5">
                     {/* Pay Online */}
                     <button
+                      key="payment-option-online"
                       type="button"
                       onClick={() => setPaymentMethod('pay_online')}
                       className={cn(
@@ -1972,6 +2245,7 @@ export default function Cart({ isOpen, setIsOpen, user, cart, removeFromCart, up
                     {/* Cash Option */}
                     {(!discountSettings || discountSettings.allowCashOrders !== false) && (
                       <button
+                        key="payment-option-cash"
                         type="button"
                         onClick={() => setPaymentMethod('cash')}
                         className={cn(
@@ -2009,6 +2283,7 @@ export default function Cart({ isOpen, setIsOpen, user, cart, removeFromCart, up
 
                     {/* Card on Collection / Delivery */}
                     <button
+                      key="payment-option-card"
                       type="button"
                       onClick={() => setPaymentMethod('card_on_collection')}
                       className={cn(
@@ -2091,6 +2366,106 @@ export default function Cart({ isOpen, setIsOpen, user, cart, removeFromCart, up
                 </div>
               </>
             )}
+          </motion.div>
+        </motion.div>
+      )}
+
+      {/* Sign-In vs Guest Mode Choice Modal */}
+      {showAuthOrGuestModal && (
+        <motion.div
+          key="auth-or-guest-modal"
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          className="fixed inset-0 z-[110] bg-black/85 backdrop-blur-md flex items-center justify-center p-4"
+          onClick={() => setShowAuthOrGuestModal(false)}
+        >
+          <motion.div
+            initial={{ scale: 0.95, opacity: 0, y: 20 }}
+            animate={{ scale: 1, opacity: 1, y: 0 }}
+            exit={{ scale: 0.95, opacity: 0, y: 20 }}
+            className="bg-[#121212] border border-orange-500/30 rounded-3xl p-6 sm:p-8 max-w-md w-full shadow-2xl space-y-6 relative text-white"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-white/10 pb-4">
+              <div>
+                <span className="text-[10px] font-black uppercase tracking-widest text-orange-500 block">
+                  Welcome to Crrave Leyton
+                </span>
+                <h3 className="text-xl font-black italic uppercase tracking-tight text-white">
+                  How Would You Like to Order?
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowAuthOrGuestModal(false)}
+                className="p-2 text-gray-400 hover:text-white rounded-full bg-white/5 hover:bg-white/10 transition-colors cursor-pointer"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="space-y-3">
+              {/* Option 1: Continue as Guest */}
+              <button
+                type="button"
+                onClick={() => {
+                  setShowAuthOrGuestModal(false);
+                  const detailsEl = document.getElementById('cart-customer-details');
+                  if (detailsEl) {
+                    detailsEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                  }
+                  setTimeout(() => {
+                    document.getElementById('cart-customer-name')?.focus();
+                  }, 300);
+                }}
+                className="w-full p-4 rounded-2xl bg-orange-600 hover:bg-orange-500 text-white font-bold flex items-center justify-between transition-all cursor-pointer shadow-lg shadow-orange-600/30 group"
+              >
+                <div className="flex items-center gap-3.5 text-left">
+                  <div className="p-2.5 rounded-xl bg-black/30 text-white">
+                    <Zap size={22} />
+                  </div>
+                  <div>
+                    <span className="text-sm font-black uppercase tracking-wider block">
+                      Order as Guest
+                    </span>
+                    <span className="text-xs text-orange-100 font-medium">
+                      Fast checkout, no account or password needed
+                    </span>
+                  </div>
+                </div>
+                <ChevronRight size={18} className="group-hover:translate-x-1 transition-transform" />
+              </button>
+
+              {/* Option 2: Sign In / Create Account */}
+              <button
+                type="button"
+                onClick={() => {
+                  setShowAuthOrGuestModal(false);
+                  if (setAuthModalOpen) setAuthModalOpen(true);
+                }}
+                className="w-full p-4 rounded-2xl bg-white/5 hover:bg-white/10 border border-white/10 text-white font-bold flex items-center justify-between transition-all cursor-pointer group"
+              >
+                <div className="flex items-center gap-3.5 text-left">
+                  <div className="p-2.5 rounded-xl bg-orange-500/20 text-orange-400">
+                    <Sparkles size={22} />
+                  </div>
+                  <div>
+                    <span className="text-sm font-black uppercase tracking-wider block text-white">
+                      Sign In with Phone
+                    </span>
+                    <span className="text-xs text-gray-400 font-medium">
+                      Collect stamps & unlock 10% OFF reward
+                    </span>
+                  </div>
+                </div>
+                <ChevronRight size={18} className="text-gray-400 group-hover:translate-x-1 transition-transform" />
+              </button>
+            </div>
+
+            <p className="text-[11px] text-gray-400 text-center leading-relaxed">
+              Guest orders receive email receipts and real-time live kitchen tracking!
+            </p>
           </motion.div>
         </motion.div>
       )}

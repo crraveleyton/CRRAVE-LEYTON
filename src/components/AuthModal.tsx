@@ -330,9 +330,10 @@ export default function AuthModal({ isOpen, onClose, onSuccess }: AuthModalProps
   return (
     <AnimatePresence>
       {isOpen && (
-        <>
+        <div key="auth-modal-root">
           {/* Backdrop */}
           <motion.div
+            key="auth-modal-backdrop"
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
@@ -342,8 +343,9 @@ export default function AuthModal({ isOpen, onClose, onSuccess }: AuthModalProps
           />
 
           {/* Modal Container */}
-          <div className="fixed inset-0 z-[110] flex items-center justify-center p-4 pointer-events-none">
+          <div key="auth-modal-container" className="fixed inset-0 z-[110] flex items-center justify-center p-4 pointer-events-none">
             <motion.div
+              key="auth-modal-dialog"
               initial={{ opacity: 0, scale: 0.95, y: 15 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.95, y: 15 }}
@@ -697,7 +699,7 @@ export default function AuthModal({ isOpen, onClose, onSuccess }: AuthModalProps
               </div>
             </motion.div>
           </div>
-        </>
+        </div>
       )}
     </AnimatePresence>
   );

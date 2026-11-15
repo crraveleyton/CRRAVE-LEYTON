@@ -40,6 +40,8 @@ import {
   Smartphone,
   ExternalLink,
   Shield,
+  Eye,
+  EyeOff,
   ChevronRight,
   ChevronDown,
   History,
@@ -58,6 +60,9 @@ import {
   Send,
   AlertCircle,
   Sparkles,
+  Truck,
+  Store,
+  Monitor,
 } from "lucide-react";
 import { AdminInvoice } from "./AdminInvoice";
 import { formatPrice, cn, formatOrderId, formatPostcode, removeAllergyBrackets } from "../lib/utils";
@@ -65,11 +70,26 @@ import {
   DEFAULT_BUSINESS_HOURS,
   DAY_NAMES,
   ClosedDateSetting,
+  normalizeBusinessHours,
+  parseTimeToMinutes,
 } from "../lib/businessHours";
 import { toast } from "sonner";
 import { qzService } from "../lib/qz-service";
 import { bluetoothPrinter } from "../lib/bluetooth-printer";
 import { EscPosEncoder } from "../lib/escpos-encoder";
+import {
+  PrintMode,
+  getStoredPrintMode,
+  setStoredPrintMode,
+  getElectronBridgeUrl,
+  setElectronBridgeUrl,
+  getElectronPrinterName,
+  setElectronPrinterName,
+  dispatchDirectElectronPrint,
+  dispatchRawBtPrint,
+  wrapStandalonePrintDocument,
+  uint8ArrayToBase64,
+} from "../lib/print-bridge";
 
 interface MenuItem {
   id: string;
@@ -151,12 +171,16 @@ interface ReceiptSettings {
   tagline: string;
   headerAddress: string;
   headerPhone: string;
+  vatNumber?: string;
   infoBox1: string;
   infoBox2: string;
   infoBox3: string;
   collectionDiscount: DiscountRule;
   deliveryDiscount: DiscountRule;
   cashDiscount?: DiscountRule;
+  acceptDeliveryOrders?: boolean;
+  acceptCollectionOrders?: boolean;
+  stripePublishableKey?: string;
   stampCard?: {
     enabled: boolean;
     percentagePerOrder: number;
@@ -188,14 +212,33 @@ export default function AdminPanel({
   const [menuItems, setMenuItems] = useState<MenuItem[]>(() => {
     try {
       const saved = localStorage.getItem("crrave_menu_items");
-      if (saved) return JSON.parse(saved);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          const hasCrraver = parsed.some((i: any) => i.category === 'CRRAVER SIDES' || i.category === 'CRRAVE SIDES');
+          if (!hasCrraver) {
+            return CRRAVE_MENU_ITEMS as MenuItem[];
+          }
+          return parsed;
+        }
+      }
     } catch (e) {}
     return CRRAVE_MENU_ITEMS as MenuItem[];
   });
   const [categories, setCategories] = useState<Category[]>(() => {
     try {
       const saved = localStorage.getItem("crrave_categories");
-      if (saved) return JSON.parse(saved);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          if (!parsed.some((c: any) => c.name === 'CRRAVER SIDES' || c.name === 'CRRAVE SIDES')) {
+            const sidesIdx = parsed.findIndex((c: any) => c.name === 'SIDES');
+            const insertIdx = sidesIdx >= 0 ? sidesIdx : parsed.length;
+            parsed.splice(insertIdx, 0, { id: 'cat-crraver-sides', name: 'CRRAVER SIDES', order: insertIdx });
+          }
+          return parsed;
+        }
+      }
     } catch (e) {}
     return CRRAVE_CATEGORIES as Category[];
   });
@@ -210,6 +253,29 @@ export default function AdminPanel({
     return new Date().toISOString().split("T")[0];
   });
   const [loading, setLoading] = useState(true);
+  const [isSummaryPrivate, setIsSummaryPrivate] = useState<boolean>(() => {
+    try {
+      const saved = localStorage.getItem("crrave_admin_summary_private");
+      return saved !== "false"; // Default to private
+    } catch {
+      return true;
+    }
+  });
+  const [printMode, setPrintMode] = useState<PrintMode>(() => getStoredPrintMode());
+  const [previewCopyType, setPreviewCopyType] = useState<"CUSTOMER" | "KITCHEN">("CUSTOMER");
+  const [electronBridgeUrl, setElectronBridgeUrlState] = useState<string>(() => getElectronBridgeUrl());
+  const [electronPrinterName, setElectronPrinterNameState] = useState<string>(() => getElectronPrinterName());
+
+  const handleChangePrintMode = (mode: PrintMode) => {
+    setPrintMode(mode);
+    setStoredPrintMode(mode);
+    toast.success(
+      mode === "electron"
+        ? "Switched to Direct Print (Electron EXE)"
+        : "Switched to RawBT (ESC/POS)"
+    );
+  };
+
   const [isResettingOrders, setIsResettingOrders] = useState(false);
   const [showResetConfirm, setShowResetConfirm] = useState(false);
   const [isEditing, setIsEditing] = useState<string | null>(null);
@@ -295,36 +361,7 @@ export default function AdminPanel({
   >("incoming");
   const [expandedOrderId, setExpandedOrderId] = useState<string | null>(null);
   const [currentTime, setCurrentTime] = useState(new Date());
-  const [isSyncingStripe, setIsSyncingStripe] = useState(false);
 
-  const handleSyncStripeOrders = async (isManual = true) => {
-    if (isSyncingStripe) return;
-    setIsSyncingStripe(true);
-    try {
-      const resp = await fetch("/api/sync-stripe-orders");
-      if (resp.ok) {
-        const data = await resp.json();
-        if (data.skipped) {
-          if (isManual) {
-            toast.info("Stripe payment scan skipped (STRIPE_SECRET_KEY not configured).");
-          }
-          return;
-        }
-        if (data.recoveredCount > 0) {
-          toast.success(`Recovered ${data.recoveredCount} paid order(s) from Stripe!`);
-        } else if (isManual) {
-          toast.info(`Checked Stripe (${data.checkedCount} recent payments). All paid orders are synced!`);
-        }
-      }
-    } catch (err: any) {
-      if (isManual) {
-        console.error("Stripe sync error:", err);
-        toast.error("Failed to check Stripe payments.");
-      }
-    } finally {
-      setIsSyncingStripe(false);
-    }
-  };
 
   // Email Notification & Cloudflare Worker Testing State (Phase 7)
   const [emailStatus, setEmailStatus] = useState<any>(null);
@@ -402,14 +439,9 @@ export default function AdminPanel({
     }
   };
 
-  // Auto-sync Stripe orders and fetch email status on mount
+  // Fetch email status on mount
   useEffect(() => {
-    handleSyncStripeOrders(false);
     fetchEmailStatus();
-    const interval = setInterval(() => {
-      handleSyncStripeOrders(false);
-    }, 120000);
-    return () => clearInterval(interval);
   }, []);
   const defaultReceiptSettings: ReceiptSettings = {
     showOnPremiseNumber: true,
@@ -441,6 +473,9 @@ export default function AdminPanel({
     collectionDiscount: { enabled: false, minOrder: 20, percentage: 10 },
     deliveryDiscount: { enabled: false, minOrder: 30, percentage: 5 },
     cashDiscount: { enabled: false, minOrder: 15, percentage: 5 },
+    acceptDeliveryOrders: true,
+    acceptCollectionOrders: true,
+    stripePublishableKey: "",
     stampCard: { enabled: true, percentagePerOrder: 10 },
     localDeliveryFee: 1.5,
     deliveryFees: [
@@ -595,6 +630,18 @@ export default function AdminPanel({
           // Isolate from other projects: Only process Crrave Leyton orders
           if (data.restaurantId !== 'crrave_leyton' && !doc.id.startsWith('crrave')) continue;
 
+          // Ignore and delete any bogus synthetic Apple Pay test orders
+          const cName = String(data.customerName || '').toLowerCase();
+          const items = Array.isArray(data.items) ? data.items : [];
+          const hasSyntheticItem = items.some((i: any) => 
+            String(i?.name || '').toLowerCase().includes('online order (paid via stripe') ||
+            String(i?.name || '').toLowerCase().includes('online order (apple pay')
+          );
+          if (cName.includes('customer (apple pay)') || (cName === 'customer' && hasSyntheticItem) || (data.phone === '07000000000' && hasSyntheticItem)) {
+            deleteDoc(doc.ref).catch(() => {});
+            continue;
+          }
+
           if (seenIds.has(doc.id)) continue;
           seenIds.add(doc.id);
 
@@ -665,7 +712,7 @@ export default function AdminPanel({
     return (baseTime ? baseTime.getTime() : now.getTime()) + 45 * 60000;
   };
 
-  const renderOrderCard = (order: Order, compact: boolean = false) => {
+  const renderOrderCard = (order: Order, compact: boolean = false, idx?: number) => {
     const isExpanded = expandedOrderId === order.id;
 
     const getHeaderAction = () => {
@@ -880,7 +927,7 @@ export default function AdminPanel({
 
     return (
       <div
-        key={order.id}
+        key={order.id ? `order-card-${order.status}-${order.id}-${idx ?? 0}` : `order-card-${order.status}-${idx ?? 0}`}
         className={cn(
           "rounded-2xl transition-all duration-500 overflow-hidden border",
           isExpanded
@@ -1158,7 +1205,7 @@ export default function AdminPanel({
                 <ul className="space-y-2">
                   {order.items.map((item: any, i: number) => (
                     <li
-                      key={i}
+                      key={`card-${order.id}-item-${i}-${item.id || item.name || 'dish'}`}
                       className={cn(
                         "flex justify-between items-start text-sm py-1 border-b last:border-0",
                         activeTab === "orders" ? "border-slate-200/60" : "border-white/5"
@@ -1510,6 +1557,18 @@ export default function AdminPanel({
           // Isolate from other projects: Only process Crrave Leyton orders
           if (data.restaurantId !== 'crrave_leyton' && !doc.id.startsWith('crrave')) continue;
 
+          // Ignore and delete any bogus synthetic Apple Pay test orders
+          const cName = String(data.customerName || '').toLowerCase();
+          const items = Array.isArray(data.items) ? data.items : [];
+          const hasSyntheticItem = items.some((i: any) => 
+            String(i?.name || '').toLowerCase().includes('online order (paid via stripe') ||
+            String(i?.name || '').toLowerCase().includes('online order (apple pay')
+          );
+          if (cName.includes('customer (apple pay)') || (cName === 'customer' && hasSyntheticItem) || (data.phone === '07000000000' && hasSyntheticItem)) {
+            deleteDoc(doc.ref).catch(() => {});
+            continue;
+          }
+
           if (seenIds.has(doc.id)) continue;
           seenIds.add(doc.id);
 
@@ -1531,6 +1590,16 @@ export default function AdminPanel({
             const data = change.doc.data();
             if (data.restaurantId !== 'crrave_leyton' && !change.doc.id.startsWith('crrave')) return;
 
+            const cName = String(data.customerName || '').toLowerCase();
+            const items = Array.isArray(data.items) ? data.items : [];
+            const hasSyntheticItem = items.some((i: any) => 
+              String(i?.name || '').toLowerCase().includes('online order (paid via stripe') ||
+              String(i?.name || '').toLowerCase().includes('online order (apple pay')
+            );
+            if (cName.includes('customer (apple pay)') || (cName === 'customer' && hasSyntheticItem) || (data.phone === '07000000000' && hasSyntheticItem)) {
+              return;
+            }
+
             const order = { id: change.doc.id, ...data } as Order;
             // Ensure it's a pending order and not just an old one being re-synced
             if (order.status === "pending") {
@@ -1550,25 +1619,19 @@ export default function AdminPanel({
         setOrders(newOrders);
         setLoading(false);
 
-        // Sync queue: Only allow pending orders without estimates
-        setNewOrdersQueue((prev) => {
-          const stillPending = newOrders.filter(
-            (o) => o.status === "pending" && !o.estimate,
-          );
-          // Keep order of existing queue but filter out stale ones
-          const updated = prev.filter((po) =>
-            stillPending.find((sp) => sp.id === po.id),
-          );
-          // Add new ones not in queue
-          stillPending.forEach((sp) => {
-            if (!updated.find((u) => u.id === sp.id)) updated.push(sp);
-          });
-          return updated;
-        });
-
-        // Mark as loaded after the first snapshot is processed
+        // Sync queue: On initial load do NOT pop up old/existing pending orders
         if (isFirstLoad.current) {
           isFirstLoad.current = false;
+          setNewOrdersQueue([]);
+        } else {
+          setNewOrdersQueue((prev) => {
+            const stillPending = newOrders.filter(
+              (o) => o.status === "pending" && !o.estimate,
+            );
+            return prev.filter((po) =>
+              stillPending.some((sp) => sp.id === po.id),
+            );
+          });
         }
       },
     );
@@ -1952,251 +2015,655 @@ export default function AdminPanel({
     setEstimateInput(`${newMins} mins`);
   };
 
+  const escapeHtml = (value: string | undefined | null): string => {
+    if (!value) return "";
+    return String(value)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+  };
+
+  const getOrderTimeStr = (order: Order): string => {
+    const ms = order.createdAt?.toMillis
+      ? order.createdAt.toMillis()
+      : order.createdAt?.seconds
+        ? order.createdAt.seconds * 1000
+        : Date.now();
+    return new Date(ms).toLocaleTimeString([], {
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  };
+
+  const getPaymentTag = (order: Order): string => {
+    if (order.paymentMethod === "pay_online" || order.paymentMethod === "card") {
+      return "PAID - CARD";
+    }
+    if (order.paymentMethod === "card_on_collection") {
+      return "CARD ON COLLECTION";
+    }
+    return "PAID - CASH";
+  };
+
+  const getAddressLines = (order: Order): string[] => {
+    const lines: string[] = [];
+    if (order.houseName) lines.push(order.houseName.trim());
+    if (order.streetName) {
+      const streetLine = `${order.houseNumber ? order.houseNumber + " " : ""}${order.streetName}`.trim();
+      if (streetLine) lines.push(streetLine);
+      if (order.areaName) lines.push(order.areaName.trim());
+      if (order.postcode) lines.push(formatPostcode(order.postcode));
+    } else if (order.address) {
+      const parts = order.address.split("\n");
+      parts.forEach((p, idx) => {
+        const trimmed = p.trim();
+        if (!trimmed) return;
+        if ((idx === parts.length - 1 || trimmed.length <= 9) && trimmed.length >= 5 && trimmed.length <= 9) {
+          lines.push(formatPostcode(trimmed));
+        } else {
+          lines.push(trimmed);
+        }
+      });
+    }
+    return lines;
+  };
+
   const generateReceiptHtml = (
     order: Order,
     copyType: "KITCHEN" | "CUSTOMER" = "CUSTOMER",
   ) => {
-    const _s = receiptSettings;
+    const s = receiptSettings;
+    const storeName = (s.businessName || "Crrave Leyton").trim();
+    const storeAddr = (s.headerAddress || "323A Lea Bridge Road, E10 7LA").trim();
+    const storeTel = (s.headerPhone || "07947465085 / 01708361952").trim();
+    const storeVat = (s.vatNumber || "").trim();
+
+    const orderNumRaw = (order as any).orderNumber
+      ? `#${(order as any).orderNumber}`
+      : formatOrderId(order.id);
+    const placedTime = getOrderTimeStr(order);
+    const rawName = (order.customerName || "").trim();
+    const hasName = Boolean(rawName && rawName.toLowerCase() !== "guest");
+    const orderTypeStr = (order.type || "collection").toUpperCase();
+    const paymentTag = getPaymentTag(order);
+    const addrLines = getAddressLines(order);
+    const scheduleStr =
+      order.timeSlot && order.timeSlot !== "ASAP"
+        ? `SCHEDULE TIME: ${order.timeSlot.toUpperCase()}`
+        : order.estimate
+          ? `ESTIMATE TIME: ${order.estimate.toUpperCase()}`
+          : "";
 
     const subtotalVal =
       (order as any).subtotal ||
       order.total + ((order as any).discountAmount || 0);
     const stampDiscount = (order as any).stampCardDiscount || 0;
     const itemDiscount = (order as any).discountAmount || 0;
-    const intermediateTotal = subtotalVal - stampDiscount - itemDiscount;
-    const finalTotal = order.total;
+    const totalDiscount = stampDiscount + itemDiscount;
+    const serviceCharge = Number((order as any).serviceCharge || 0);
+    const deliveryFee = Number((order as any).deliveryFee || 0);
+    const bagCharge = Number((order as any).bagCharge || 0);
+    const finalTotal = Number(order.total || 0);
+
+    const parseItemDetails = (item: any) => {
+      let cleanedName = item.name || "";
+      const displayVariant = item.variant || "";
+      if (displayVariant && cleanedName.includes(`(${displayVariant})`)) {
+        cleanedName = cleanedName.replace(`(${displayVariant})`, "").trim();
+      }
+      if (copyType === "KITCHEN") {
+        cleanedName = removeAllergyBrackets(cleanedName);
+      }
+
+      const variantOptions = displayVariant
+        ? displayVariant
+            .split(/\s*[•·|\n]\s*|\s*\/\s*/)
+            .map((part: string) => part.trim())
+            .filter((part: string) => {
+              if (!part) return false;
+              if (part.toLowerCase() === cleanedName.toLowerCase()) return false;
+              return true;
+            })
+            .map((part: string) =>
+              copyType === "KITCHEN" ? removeAllergyBrackets(part) : part,
+            )
+        : [];
+
+      let displayNotes = item.notes ? item.notes.trim() : "";
+      if (copyType === "KITCHEN" && displayNotes) {
+        displayNotes = removeAllergyBrackets(displayNotes);
+      }
+      const showNotes =
+        Boolean(displayNotes) &&
+        (!item.variant ||
+          !displayNotes.toLowerCase().includes(item.variant.toLowerCase())) &&
+        !cleanedName.toLowerCase().includes(displayNotes.toLowerCase());
+
+      return { cleanedName, variantOptions, displayNotes, showNotes };
+    };
+
+    const sharedStyles = `
+      <style>
+        .receipt-preview-wrapper {
+          font-family: Arial, Helvetica, sans-serif;
+          background: #ffffff;
+          color: #000000;
+          width: 100%;
+          margin: 0;
+          padding: 0;
+        }
+        .receipt-container {
+          font-family: Arial, Helvetica, sans-serif;
+          background: #ffffff;
+          color: #000000;
+          width: 70mm;
+          max-width: 70mm;
+          padding: 1mm 1.5mm 6mm 1.5mm;
+          margin: 0 auto;
+          box-sizing: border-box;
+          line-height: 1.25;
+        }
+        .divider-dashed {
+          border: none;
+          border-top: 1.5px dashed #000000;
+          margin: 6px 0;
+          width: 100%;
+        }
+        .divider-solid {
+          border: none;
+          border-top: 2px solid #000000;
+          margin: 6px 0;
+          width: 100%;
+        }
+        .divider-dotted {
+          border: none;
+          border-top: 1.5px dotted #000000;
+          margin: 5px 0;
+          width: 100%;
+        }
+        .receipt-table {
+          width: 100%;
+          border-collapse: collapse;
+          table-layout: fixed;
+          color: #000000;
+        }
+        .receipt-table th, .receipt-table td {
+          vertical-align: top;
+          color: #000000;
+          word-wrap: break-word;
+          overflow-wrap: break-word;
+        }
+        /* Main Copy (Customer Receipt) */
+        .cust-store-name {
+          font-size: 17px;
+          font-weight: 900;
+          letter-spacing: 0.5px;
+          text-align: center;
+          margin: 0 0 2px 0;
+        }
+        .cust-store-meta {
+          font-size: 13.5px;
+          font-weight: 700;
+          text-align: center;
+          line-height: 1.3;
+        }
+        .cust-header-row {
+          display: flex;
+          justify-content: space-between;
+          align-items: baseline;
+          gap: 6px;
+        }
+        .cust-name-time {
+          font-size: 14.5px;
+          font-weight: 900;
+        }
+        .cust-order-no {
+          font-size: 14px;
+          font-weight: 800;
+        }
+        .cust-order-no-only {
+          font-size: 15px;
+          font-weight: 900;
+        }
+        .cust-order-type {
+          font-size: 15px;
+          font-weight: 900;
+          text-transform: uppercase;
+          text-align: center;
+          margin-top: 3px;
+        }
+        .cust-th {
+          font-size: 12.5px;
+          font-weight: 900;
+          border-bottom: 1.5px solid #000000;
+          padding: 3px 0 4px 0;
+          text-transform: uppercase;
+        }
+        .cust-td-qty {
+          font-size: 13.5px;
+          font-weight: 800;
+          padding: 4px 2px 2px 0;
+          text-align: left;
+        }
+        .cust-td-item {
+          font-size: 13.5px;
+          font-weight: 700;
+          padding: 4px 4px 2px 0;
+          text-align: left;
+        }
+        .cust-td-price {
+          font-size: 13.5px;
+          font-weight: 800;
+          padding: 4px 0 2px 2px;
+          text-align: right;
+        }
+        .cust-subitem {
+          font-size: 11.5px;
+          font-weight: 500;
+          padding-left: 12px;
+          line-height: 1.3;
+        }
+        .cust-item-note {
+          font-size: 11.5px;
+          font-weight: 900;
+          padding-left: 12px;
+          line-height: 1.3;
+        }
+        .cust-payment-tag {
+          font-size: 12.5px;
+          font-weight: 900;
+          text-transform: uppercase;
+          text-align: center;
+          margin: 4px 0;
+        }
+        .cust-totals-row {
+          display: flex;
+          justify-content: space-between;
+          font-size: 13px;
+          font-weight: 700;
+          margin: 2px 0;
+        }
+        .cust-grand-total {
+          display: flex;
+          justify-content: space-between;
+          font-size: 15.5px;
+          font-weight: 900;
+          border-top: 2px solid #000000;
+          padding-top: 5px;
+          margin-top: 5px;
+        }
+        .cust-schedule {
+          font-size: 15px;
+          font-weight: 800;
+          margin: 4px 0;
+        }
+        .cust-footer-info {
+          font-size: 14px;
+          font-weight: 700;
+          line-height: 1.3;
+        }
+        .cust-footer-notes {
+          font-size: 14px;
+          font-weight: 800;
+          line-height: 1.3;
+          margin: 4px 0;
+        }
+        .cust-bottom-order {
+          font-size: 17px;
+          font-weight: 900;
+          letter-spacing: 0.5px;
+          text-align: center;
+          margin-top: 6px;
+        }
+
+        /* Kitchen Copy */
+        .kit-top-title {
+          font-size: 15px;
+          font-weight: 900;
+          letter-spacing: 0.5px;
+          text-align: center;
+          margin: 0 0 4px 0;
+          text-transform: uppercase;
+        }
+        .kit-header-row {
+          display: flex;
+          justify-content: space-between;
+          align-items: baseline;
+          gap: 6px;
+        }
+        .kit-name-order {
+          font-size: 16px;
+          font-weight: 900;
+        }
+        .kit-time {
+          font-size: 16px;
+          font-weight: 900;
+          white-space: nowrap;
+        }
+        .kit-time-no-name {
+          font-size: 15.5px;
+          font-weight: 900;
+          white-space: nowrap;
+        }
+        .kit-order-type {
+          font-size: 15px;
+          font-weight: 900;
+          text-transform: uppercase;
+          text-align: center;
+          margin-top: 4px;
+        }
+        .kit-th {
+          font-size: 13.5px;
+          font-weight: 900;
+          border-bottom: 1.5px solid #000000;
+          padding: 3px 0 4px 0;
+          text-transform: uppercase;
+        }
+        .kit-td-qty {
+          font-size: 15.5px;
+          font-weight: 900;
+          padding: 5px 2px 2px 0;
+          text-align: left;
+        }
+        .kit-td-item {
+          font-size: 15.5px;
+          font-weight: 800;
+          padding: 5px 0 2px 0;
+          text-align: left;
+        }
+        .kit-subitem {
+          font-size: 15.5px;
+          font-weight: 800;
+          padding-left: 14px;
+          line-height: 1.35;
+        }
+        .kit-item-note {
+          font-size: 15px;
+          font-weight: 900;
+          padding-left: 14px;
+          line-height: 1.35;
+        }
+        .kit-info {
+          font-size: 14px;
+          font-weight: 700;
+          line-height: 1.35;
+        }
+        .kit-notes {
+          font-size: 14px;
+          font-weight: 800;
+          line-height: 1.35;
+          margin: 4px 0;
+        }
+        .kit-bottom-type {
+          font-size: 16.5px;
+          font-weight: 900;
+          text-transform: uppercase;
+          letter-spacing: 0.5px;
+          text-align: center;
+          margin-top: 4px;
+        }
+        .kit-schedule {
+          font-size: 13.5px;
+          font-weight: 800;
+          text-align: center;
+          margin-top: 3px;
+        }
+        .kit-bottom-order {
+          font-size: 21px;
+          font-weight: 900;
+          letter-spacing: 0.5px;
+          text-align: center;
+          margin-top: 4px;
+        }
+      </style>
+    `;
+
+    if (copyType === "KITCHEN") {
+      const itemsHtml = order.items
+        .map((item, idx) => {
+          const { cleanedName, variantOptions, displayNotes, showNotes } =
+            parseItemDetails(item);
+          return `
+            <tr>
+              <td class="kit-td-qty">${item.quantity || 1}x</td>
+              <td class="kit-td-item">
+                <div>${escapeHtml(cleanedName)}</div>
+                ${variantOptions.map((opt: string) => `<div class="kit-subitem">- ${escapeHtml(opt)}</div>`).join("")}
+                ${showNotes ? `<div class="kit-item-note">! NOTE: ${escapeHtml(displayNotes)}</div>` : ""}
+              </td>
+            </tr>
+            ${
+              idx < order.items.length - 1
+                ? `<tr><td colspan="2" style="padding: 2px 0;"><div class="divider-dotted"></div></td></tr>`
+                : ""
+            }
+          `;
+        })
+        .join("");
+
+      return `
+        <div class="receipt-preview-wrapper">
+          ${sharedStyles}
+          <div class="receipt-container">
+            <div class="kit-top-title">KITCHEN COPY</div>
+            <div class="divider-solid"></div>
+
+            ${
+              hasName
+                ? `
+              <div class="kit-header-row">
+                <div class="kit-name-order">${escapeHtml(rawName)}</div>
+                <div class="kit-time">${escapeHtml(placedTime)}</div>
+              </div>
+              <div class="kit-name-order">Order: ${escapeHtml(orderNumRaw)}</div>
+            `
+                : `
+              <div class="kit-header-row">
+                <div class="kit-name-order">Order: ${escapeHtml(orderNumRaw)}</div>
+                <div class="kit-time-no-name">${escapeHtml(placedTime)}</div>
+              </div>
+            `
+            }
+            <div class="kit-order-type">${escapeHtml(orderTypeStr)}</div>
+
+            <div class="divider-dashed"></div>
+
+            <table class="receipt-table">
+              <colgroup>
+                <col style="width: 13%;" />
+                <col style="width: 87%;" />
+              </colgroup>
+              <thead>
+                <tr>
+                  <th class="kit-th" style="text-align: left;">QTY</th>
+                  <th class="kit-th" style="text-align: left;">ITEM</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${itemsHtml}
+              </tbody>
+            </table>
+
+            <div class="divider-dashed"></div>
+
+            ${order.notes && order.notes.trim() ? `<div class="kit-notes">! NOTE: ${escapeHtml(order.notes.trim())}</div>` : ""}
+
+            ${
+              addrLines.length > 0 || order.phone
+                ? `
+              <div class="kit-info">
+                ${addrLines.map((l) => `<div>${escapeHtml(l)}</div>`).join("")}
+                ${order.phone ? `<div style="font-weight: 800; margin-top: 2px;">Tel: ${escapeHtml(order.phone)}</div>` : ""}
+              </div>
+            `
+                : ""
+            }
+
+            <div class="divider-solid"></div>
+            <div class="kit-bottom-type">${escapeHtml(orderTypeStr)}</div>
+            ${scheduleStr ? `<div class="kit-schedule">${escapeHtml(scheduleStr)}</div>` : ""}
+            <div class="kit-bottom-order">Order ${escapeHtml(orderNumRaw)}</div>
+          </div>
+        </div>
+      `;
+    }
+
+    // ===== MAIN COPY (CUSTOMER RECEIPT) =====
+    const custItemsHtml = order.items
+      .map((item, idx) => {
+        const { cleanedName, variantOptions, displayNotes, showNotes } =
+          parseItemDetails(item);
+        const linePrice = (Number(item.price || 0) * Number(item.quantity || 1)).toFixed(2);
+        return `
+          <tr>
+            <td class="cust-td-qty">${item.quantity || 1}x</td>
+            <td class="cust-td-item">
+              <div>${escapeHtml(cleanedName)}</div>
+              ${variantOptions.map((opt: string) => `<div class="cust-subitem">- ${escapeHtml(opt)}</div>`).join("")}
+              ${showNotes ? `<div class="cust-item-note">! NOTE: ${escapeHtml(displayNotes)}</div>` : ""}
+            </td>
+            <td class="cust-td-price">&pound;${linePrice}</td>
+          </tr>
+          ${
+            idx < order.items.length - 1
+              ? `<tr><td colspan="3" style="padding: 2px 0;"><div class="divider-dotted"></div></td></tr>`
+              : ""
+          }
+        `;
+      })
+      .join("");
 
     return `
       <div class="receipt-preview-wrapper">
-        <style>
-          @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700;800&display=swap');
-          
-          .receipt-preview-wrapper { 
-            font-family: 'JetBrains Mono', monospace; 
-            padding: 0; 
-            margin: 0; 
-            color: #000 !important; 
-            line-height: 1.15; 
-            width: 100%; 
-            background: #fff;
-          }
-          .receipt-container { 
-            background: #fff; 
-            width: 100%; 
-            max-width: 400px; 
-            margin: 0 auto; 
-            padding: 20px; 
-            color: #000 !important;
-          }
-          .divider { border-top: 2px dashed #000; margin: 12px 0; width: 100%; }
-          
-          .order-id { font-size: 24pt; font-weight: 800; text-align: center; margin: 15px 0; color: #000 !important; }
-
-          .receipt-table { width: 100%; border-collapse: collapse; table-layout: fixed; color: #000 !important; }
-          .col-label { text-align: left; vertical-align: top; padding: 6px 0; font-size: 13pt; color: #000 !important; }
-          .col-price { text-align: right; vertical-align: top; padding: 6px 0; width: 100px; font-size: 13pt; color: #000 !important; }
-          
-          .header-gbp { font-weight: 700; font-size: 11pt; padding-bottom: 8px; color: #000 !important; }
-          .item-name { font-weight: 700; display: block; color: #000 !important; }
-          .item-sub { font-size: 11pt; font-weight: 400; color: #000 !important; margin-top: 4px; }
-
-          .spacer-row td { height: 15px; }
-          .separator-row td { border-top: 2px dashed #000; padding: 10px 0; }
-
-          .grand-total-label { font-size: 15pt; font-weight: 800; padding-top: 20px; color: #000 !important; }
-          .grand-total-value { font-size: 18pt; font-weight: 800; border-top: 3px solid #000; padding-top: 8px; text-align: right; width: 100px; color: #000 !important; }
-
-          .payment-info { width: 100%; margin: 25px auto 0; font-size: 14pt; color: #000 !important; }
-          .payment-label { font-weight: 800; display: block; margin-bottom: 4px; }
-          .payment-value { font-weight: 400; }
-          
-          .client-section { width: 100%; margin: 35px auto 0; border-top: 2px solid #000; padding-top: 20px; text-align: left; color: #000 !important; }
-          .client-label { font-size: 11pt; font-weight: 400; margin-bottom: 6px; color: #444 !important; text-align: left; }
-          .client-name { font-size: 17pt; font-weight: 800; margin: 8px 0; text-align: left; color: #000 !important; }
-          .client-address { font-size: 14pt; font-weight: 400; line-height: 1.3; margin-bottom: 12px; text-align: left; color: #000 !important; }
-          .client-notes { font-family: Arial, sans-serif; font-style: italic; font-size: 24pt; font-weight: bold; line-height: 1.2; margin-bottom: 20px; border: 3px solid #000; padding: 12px; text-align: left; width: 100%; box-sizing: border-box; color: #000 !important; }
-          .contact-number { font-size: 18pt; font-weight: 800; text-align: left; color: #000 !important; }
-        </style>
+        ${sharedStyles}
         <div class="receipt-container">
-          <div class="header">
-            <img src="/logo.png" style="width: 180px; height: auto; display: block; margin: 0 auto 15px;" referrerPolicy="no-referrer" />
+          <div class="cust-store-name">** ${escapeHtml(storeName)} **</div>
+          <div class="cust-store-meta">
+            <div>${escapeHtml(storeAddr)}</div>
+            <div>Tel: ${escapeHtml(storeTel)}</div>
+            ${storeVat ? `<div>VAT: ${escapeHtml(storeVat)}</div>` : ""}
           </div>
-          <div class="divider"></div>
-          <div class="order-id">${formatOrderId(order.id)}</div>
-          <div style="font-size: 22pt; font-weight: 800; text-align: center; margin: 12px 0; background-color: #000; color: #fff !important; padding: 10px 0; border-radius: 4px; text-transform: uppercase; letter-spacing: 2px;">
-            ${(order.type || "collection").toUpperCase()}
-          </div>
-          <div class="divider"></div>
-          ${order.notes ? `<div class="client-notes">Notes: ${order.notes}</div>` : ""}
-          
+
+          <div class="divider-dashed"></div>
+
+          ${
+            hasName
+              ? `
+            <div class="cust-header-row">
+              <div class="cust-name-time">${escapeHtml(rawName)}</div>
+              <div class="cust-name-time">${escapeHtml(placedTime)}</div>
+            </div>
+            <div class="cust-order-no">Order: ${escapeHtml(orderNumRaw)}</div>
+          `
+              : `
+            <div class="cust-header-row">
+              <div class="cust-order-no-only">Order: ${escapeHtml(orderNumRaw)}</div>
+              <div class="cust-name-time">${escapeHtml(placedTime)}</div>
+            </div>
+          `
+          }
+          <div class="cust-order-type">${escapeHtml(orderTypeStr)}</div>
+
+          <div class="divider-dashed"></div>
+
           <table class="receipt-table">
+            <colgroup>
+              <col style="width: 11%;" />
+              <col style="width: 61%;" />
+              <col style="width: 28%;" />
+            </colgroup>
             <thead>
               <tr>
-                <th></th>
-                <th class="col-price header-gbp">GBP</th>
+                <th class="cust-th" style="text-align: left;">QTY</th>
+                <th class="cust-th" style="text-align: left;">ITEM</th>
+                <th class="cust-th" style="text-align: right;">PRICE</th>
               </tr>
             </thead>
             <tbody>
-              ${order.items
-                .map((item) => {
-                  let cleanedName = item.name;
-                  let displayVariant = item.variant || "";
-
-                  if (
-                    displayVariant &&
-                    cleanedName.includes(`(${displayVariant})`)
-                  ) {
-                    cleanedName = cleanedName
-                      .replace(`(${displayVariant})`, "")
-                      .trim();
-                  } else if (
-                    displayVariant &&
-                    cleanedName
-                      .toLowerCase()
-                      .includes(displayVariant.toLowerCase())
-                  ) {
-                    displayVariant = "";
-                  }
-
-                  let finalDisplayName =
-                    (displayVariant ? displayVariant + " " : "") + cleanedName;
-                  let displayNotes = item.notes;
-
-                  if (copyType === "KITCHEN") {
-                    finalDisplayName = removeAllergyBrackets(finalDisplayName);
-                    if (displayNotes) {
-                      displayNotes = removeAllergyBrackets(displayNotes);
-                    }
-                  }
-
-                  const showNotes =
-                    displayNotes &&
-                    (!item.variant ||
-                      !displayNotes
-                        .toLowerCase()
-                        .includes(item.variant.toLowerCase())) &&
-                    !finalDisplayName
-                      .toLowerCase()
-                      .includes(displayNotes.toLowerCase());
-
-                  return `
-                <tr>
-                  <td class="col-label">
-                    <span class="item-name">${item.quantity} x ${finalDisplayName}</span>
-                    ${showNotes ? `<div class="item-sub">${displayNotes}</div>` : ""}
-                  </td>
-                  <td class="col-price">${(item.price * item.quantity).toFixed(2)}</td>
-                </tr>
-              `;
-                })
-                .join("")}
-
-              <tr class="separator-row"><td colspan="2"></td></tr>
-
-              <tr>
-                <td class="col-label">Subtotal</td>
-                <td class="col-price">${subtotalVal.toFixed(2)}</td>
-              </tr>
-              ${
-                stampDiscount > 0
-                  ? `
-                <tr>
-                  <td class="col-label">StampCard discount</td>
-                  <td class="col-price">-${stampDiscount.toFixed(2)}</td>
-                </tr>
-              `
-                  : ""
-              }
-              ${
-                itemDiscount > 0
-                  ? `
-                <tr>
-                  <td class="col-label">Restaurant discount</td>
-                  <td class="col-price">-${itemDiscount.toFixed(2)}</td>
-                </tr>
-              `
-                  : ""
-              }
-
-              <tr class="spacer-row"><td colspan="2"></td></tr>
-
-              <tr>
-                <td class="col-label">Order total</td>
-                <td class="col-price">${intermediateTotal.toFixed(2)}</td>
-              </tr>
-              
-              ${
-                (order as any).serviceCharge > 0
-                  ? `
-                <tr>
-                  <td class="col-label">Service charge</td>
-                  <td class="col-price">${(order as any).serviceCharge.toFixed(2)}</td>
-                </tr>
-              `
-                  : ""
-              }
-              ${
-                (order as any).deliveryFee > 0
-                  ? `
-                <tr>
-                  <td class="col-label">Delivery charge</td>
-                  <td class="col-price">${(order as any).deliveryFee.toFixed(2)}</td>
-                </tr>
-              `
-                  : ""
-              }
-              ${
-                (order as any).bagCharge > 0
-                  ? `
-                <tr>
-                  <td class="col-label">Bag charge</td>
-                  <td class="col-price">${(order as any).bagCharge.toFixed(2)}</td>
-                </tr>
-              `
-                  : ""
-              }
-
-              <tr>
-                <td class="col-label grand-total-label">Total Due</td>
-                <td class="col-price">
-                  <div style="padding-top: 15px;">
-                    <div class="grand-total-value">${finalTotal.toFixed(2)}</div>
-                  </div>
-                </td>
-              </tr>
+              ${custItemsHtml}
             </tbody>
           </table>
 
-          <div class="payment-info">
-            <span class="payment-label">Paid by:</span>
-            <span class="payment-value">${(order.paymentMethod || "CASH").toUpperCase().replace(/_/g, " ")}</span>
+          <div class="divider-dashed"></div>
+
+          <div class="cust-payment-tag">${escapeHtml(paymentTag)}</div>
+
+          <div class="cust-totals-row">
+            <span>Subtotal</span>
+            <span>&pound;${subtotalVal.toFixed(2)}</span>
+          </div>
+          ${
+            totalDiscount > 0
+              ? `
+            <div class="cust-totals-row">
+              <span>Discount</span>
+              <span>-&pound;${totalDiscount.toFixed(2)}</span>
+            </div>
+          `
+              : ""
+          }
+          ${
+            serviceCharge > 0
+              ? `
+            <div class="cust-totals-row">
+              <span>Service Charge</span>
+              <span>&pound;${serviceCharge.toFixed(2)}</span>
+            </div>
+          `
+              : ""
+          }
+          ${
+            deliveryFee > 0
+              ? `
+            <div class="cust-totals-row">
+              <span>Delivery Fee</span>
+              <span>&pound;${deliveryFee.toFixed(2)}</span>
+            </div>
+          `
+              : ""
+          }
+          ${
+            bagCharge > 0
+              ? `
+            <div class="cust-totals-row">
+              <span>Bag Charge</span>
+              <span>&pound;${bagCharge.toFixed(2)}</span>
+            </div>
+          `
+              : ""
+          }
+
+          <div class="cust-grand-total">
+            <span>TOTAL</span>
+            <span>&pound;${finalTotal.toFixed(2)}</span>
           </div>
 
-          <div class="client-section">
-            <div class="client-label">Customer details:</div>
-            <div class="client-name">${order.customerName}</div>
-            <div class="client-address">
-              ${order.houseName ? `<div>${order.houseName}</div>` : ""}
-              <div>${order.houseNumber ? order.houseNumber + " " : ""}${order.streetName || ""}</div>
-              ${order.areaName ? `<div>${order.areaName}</div>` : ""}
-              ${order.postcode ? `<div>${formatPostcode(order.postcode)}</div>` : ""}
-              ${
-                !order.streetName && order.address
-                  ? order.address
-                      .split("\n")
-                      .map((l, idx, arr) => {
-                        const trimmed = l.trim();
-                        if (idx === arr.length - 1 && trimmed.length >= 5 && trimmed.length <= 9) {
-                          return `<div>${formatPostcode(trimmed)}</div>`;
-                        }
-                        return `<div>${l}</div>`;
-                      })
-                      .join("")
-                  : ""
-              }
+          <div class="divider-dashed"></div>
+
+          ${scheduleStr ? `<div class="cust-schedule">${escapeHtml(scheduleStr)}</div>` : ""}
+          ${order.notes && order.notes.trim() ? `<div class="cust-footer-notes">! NOTE: ${escapeHtml(order.notes.trim())}</div>` : ""}
+
+          ${
+            addrLines.length > 0 || order.phone
+              ? `
+            <div class="cust-footer-info">
+              ${addrLines.map((l) => `<div>${escapeHtml(l)}</div>`).join("")}
+              ${order.phone ? `<div style="font-weight: 800; margin-top: 2px;">Tel: ${escapeHtml(order.phone)}</div>` : ""}
             </div>
-            <div class="contact-number">${order.phone}</div>
-          </div>
+          `
+              : ""
+          }
+
+          ${
+            s.infoBox1
+              ? `<div class="cust-footer-info" style="text-align: center; margin-top: 6px;">${escapeHtml(s.infoBox1)}</div>`
+              : ""
+          }
+
+          <div class="divider-solid"></div>
+          <div class="cust-bottom-order">ORDER ${escapeHtml(orderNumRaw)}</div>
         </div>
       </div>
     `;
@@ -2208,9 +2675,11 @@ export default function AdminPanel({
   ) => {
     const encoder = new EscPosEncoder();
     const s = receiptSettings;
+    // Standard Epson Font A (ESC M 0): 48 columns on 80mm paper
     const PRINTER_WIDTH = 48;
-    const separator = "=".repeat(PRINTER_WIDTH);
+    const solidSeparator = "=".repeat(PRINTER_WIDTH);
     const dashedSeparator = "-".repeat(PRINTER_WIDTH);
+    const dottedSeparator = ".".repeat(PRINTER_WIDTH);
 
     const formatRow = (
       left: string,
@@ -2221,349 +2690,381 @@ export default function AdminPanel({
       return left + " ".repeat(Math.max(1, spaces)) + right;
     };
 
+    // Word-based line wrapping without mid-word breaks unless single word exceeds limit
     const wrapLines = (text: string, limit: number): string[] => {
       if (!text) return [];
-      const words = text.split(/\s+/);
+      const rawLines = text.split(/\r?\n/);
       const lines: string[] = [];
-      let currentLine = "";
 
-      words.forEach((word) => {
-        if ((currentLine + (currentLine ? " " : "") + word).length <= limit) {
-          currentLine += (currentLine ? " " : "") + word;
-        } else {
-          if (currentLine) lines.push(currentLine);
-          currentLine = word;
+      for (const raw of rawLines) {
+        const trimmed = raw.trim();
+        if (!trimmed) continue;
+        const words = trimmed.split(/\s+/);
+        let currentLine = "";
+
+        for (const word of words) {
+          if (!word) continue;
+          if (word.length > limit) {
+            if (currentLine) {
+              lines.push(currentLine);
+              currentLine = "";
+            }
+            let remaining = word;
+            while (remaining.length > limit) {
+              lines.push(remaining.slice(0, limit));
+              remaining = remaining.slice(limit);
+            }
+            currentLine = remaining;
+          } else if (
+            (currentLine ? currentLine.length + 1 + word.length : word.length) <=
+            limit
+          ) {
+            currentLine = currentLine ? `${currentLine} ${word}` : word;
+          } else {
+            if (currentLine) lines.push(currentLine);
+            currentLine = word;
+          }
         }
-      });
-      if (currentLine) lines.push(currentLine);
+        if (currentLine) lines.push(currentLine);
+      }
       return lines;
     };
 
-    encoder.initialize().align("center");
+    const storeName = (s.businessName || "Crrave Leyton").trim();
+    const storeAddr = (s.headerAddress || "323A Lea Bridge Road, E10 7LA").trim();
+    const storeTel = (s.headerPhone || "07947465085 / 01708361952").trim();
+    const storeVat = (s.vatNumber || "").trim();
+    const orderNumRaw = (order as any).orderNumber
+      ? `#${(order as any).orderNumber}`
+      : formatOrderId(order.id);
+    const placedTime = getOrderTimeStr(order);
+    const rawName = (order.customerName || "").trim();
+    const hasName = Boolean(rawName && rawName.toLowerCase() !== "guest");
+    const orderTypeStr = (order.type || "collection").toUpperCase();
+    const paymentTag = getPaymentTag(order);
+    const addrLines = getAddressLines(order);
+    const scheduleStr =
+      order.timeSlot && order.timeSlot !== "ASAP"
+        ? `SCHEDULE TIME: ${order.timeSlot.toUpperCase()}`
+        : order.estimate
+          ? `ESTIMATE TIME: ${order.estimate.toUpperCase()}`
+          : "";
+
+    // Initialize Epson Font A (ESC M 0) & reset state
+    encoder.initialize().reset();
 
     if (copyType === "KITCHEN") {
-      encoder.bold(true).size(2, 2).line("KITCHEN COPY").size(1, 1).feed(1);
-    } else {
-      encoder.feed(1);
-    }
+      // ===== 2. KITCHEN COPY (Epson Font A, 48 cols) =====
+      encoder
+        .align("center")
+        .bold(true)
+        .line("KITCHEN COPY")
+        .reset()
+        .line(solidSeparator);
 
-    // 1. Header & Deterministic ID
-    encoder.align("center");
-    encoder.line(dashedSeparator);
-    encoder
-      .size(2, 2)
-      .bold(true)
-      .line(formatOrderId(order.id))
-      .feed(1)
-      .line((order.type || "collection").toUpperCase())
-      .size(1, 1)
-      .bold(false);
+      // Top Order Header uses doubleHeight (GS ! 0x01 -> size(1, 2))
+      encoder.align("left").size(1, 2).bold(true);
+      if (hasName) {
+        encoder.line(formatRow(rawName.slice(0, 36), placedTime, PRINTER_WIDTH));
+        encoder.line(`Order: ${orderNumRaw}`);
+      } else {
+        encoder.line(formatRow(`Order: ${orderNumRaw}`, placedTime, PRINTER_WIDTH));
+      }
+      encoder.align("center").line(orderTypeStr).reset();
 
-    // Timing Information
-    if (order.timeSlot && order.timeSlot !== "ASAP") {
-      encoder.feed(1).bold(true).size(2, 2).line("SCHEDULED TIME").size(1, 1);
-      encoder.size(2, 2).line(order.timeSlot.toUpperCase()).size(1, 1).feed(1);
-    } else if (order.estimate) {
-      encoder.feed(1).bold(true).size(2, 2).line("PREP TIME:").size(1, 1);
-      encoder.size(2, 2).line(order.estimate.toUpperCase()).size(1, 1).feed(1);
-    }
+      encoder.line(dashedSeparator);
 
-    if (order.notes) {
-      encoder.align("left").bold(true).line("NOTES:");
-      encoder.size(2, 2).bold(true); // Double size for maximum visibility
-      wrapLines(
-        order.notes,
-        Math.floor(PRINTER_WIDTH / 2),
-      ).forEach((line) => {
-        encoder.line(line);
+      // Table Header: QTY | ITEM (13% / 87% -> 6 + 42 = 48 cols)
+      encoder.align("left").bold(true).line("QTY   ITEM").reset();
+      encoder.line(solidSeparator);
+
+      order.items.forEach((item, idx) => {
+        const qtyStr = `${item.quantity || 1}x`.padEnd(6, " ");
+        let cleanedName = removeAllergyBrackets(item.name || "");
+        const displayVariant = item.variant || "";
+        if (displayVariant && cleanedName.includes(`(${displayVariant})`)) {
+          cleanedName = cleanedName.replace(`(${displayVariant})`, "").trim();
+        }
+
+        const variantOptions = displayVariant
+          ? displayVariant
+              .split(/\s*[•·|\n]\s*|\s*\/\s*/)
+              .map((p: string) => p.trim())
+              .filter((p: string) => p && p.toLowerCase() !== cleanedName.toLowerCase())
+              .map((p: string) => removeAllergyBrackets(p))
+          : [];
+
+        const displayNotes = item.notes ? removeAllergyBrackets(item.notes.trim()) : "";
+        const showNotes =
+          Boolean(displayNotes) &&
+          (!item.variant || !displayNotes.toLowerCase().includes(item.variant.toLowerCase())) &&
+          !cleanedName.toLowerCase().includes(displayNotes.toLowerCase());
+
+        // Standard Font A bold/normal
+        encoder.align("left").bold(true);
+        const nameLines = wrapLines(cleanedName, PRINTER_WIDTH - 6);
+        nameLines.forEach((line, lIdx) => {
+          encoder.line((lIdx === 0 ? qtyStr : "      ") + line);
+        });
+
+        variantOptions.forEach((opt: string) => {
+          wrapLines(`- ${opt}`, PRINTER_WIDTH - 6).forEach((line) => {
+            encoder.line("      " + line);
+          });
+        });
+
+        if (showNotes) {
+          wrapLines(`! NOTE: ${displayNotes}`, PRINTER_WIDTH - 6).forEach((line) => {
+            encoder.line("      " + line);
+          });
+        }
+        encoder.reset();
+
+        if (idx < order.items.length - 1) {
+          encoder.line(dottedSeparator);
+        }
       });
-      encoder.size(1, 1).bold(false).feed(1);
-    }
 
-    encoder.line(dashedSeparator).feed(1);
+      encoder.line(dashedSeparator);
 
-    // 2. Items
-    if (copyType !== "KITCHEN") {
+      if (order.notes && order.notes.trim()) {
+        encoder.align("left").bold(true);
+        wrapLines(`! NOTE: ${order.notes.trim()}`, PRINTER_WIDTH).forEach((l) =>
+          encoder.line(l),
+        );
+        encoder.reset();
+      }
+
+      if (addrLines.length > 0 || order.phone) {
+        encoder.align("left").bold(false);
+        addrLines.forEach((l) => {
+          wrapLines(l, PRINTER_WIDTH).forEach((wl) => encoder.line(wl));
+        });
+        if (order.phone) {
+          encoder.bold(true).line(`Tel: ${order.phone}`).bold(false);
+        }
+        encoder.reset();
+      }
+
+      encoder.line(solidSeparator);
+      encoder.align("center").bold(true).line(orderTypeStr).reset();
+      if (scheduleStr) {
+        encoder.align("center").bold(true).line(scheduleStr).reset();
+      }
+
+      // Bottom Order # uses doubleHeight + doubleWidth (GS ! 0x11 -> size(2, 2))
+      encoder.align("center").size(2, 2).bold(true);
+      wrapLines(`Order ${orderNumRaw}`, 24).forEach((l) => encoder.line(l));
+      encoder.reset().feed(3).cut();
+    } else {
+      // ===== 1. MAIN COPY (CUSTOMER RECEIPT - Epson Font A, 48 cols) =====
+      encoder
+        .align("center")
+        .bold(true)
+        .line(`** ${storeName} **`)
+        .bold(false);
+      wrapLines(storeAddr, PRINTER_WIDTH).forEach((l) => encoder.line(l));
+      encoder.line(`Tel: ${storeTel}`);
+      if (storeVat) encoder.line(`VAT: ${storeVat}`);
+      encoder.reset();
+
+      encoder.line(dashedSeparator);
+
+      // Top Order Header uses doubleHeight (GS ! 0x01 -> size(1, 2))
+      encoder.align("left").size(1, 2).bold(true);
+      if (hasName) {
+        encoder.line(formatRow(rawName.slice(0, 36), placedTime, PRINTER_WIDTH));
+        encoder.line(`Order: ${orderNumRaw}`);
+      } else {
+        encoder.line(formatRow(`Order: ${orderNumRaw}`, placedTime, PRINTER_WIDTH));
+      }
+      encoder.align("center").line(orderTypeStr).reset();
+
+      encoder.line(dashedSeparator);
+
+      // Table Header: QTY | ITEM | PRICE (11% / 61% / 28% -> 5 + 31 + 12 = 48 cols)
       encoder
         .align("left")
         .bold(true)
-        .line(formatRow("", "GBP", PRINTER_WIDTH))
-        .bold(false);
-    } else {
-      encoder.align("left").bold(true).line("ITEMS").bold(false);
-    }
+        .line("QTY  ITEM                                  PRICE")
+        .reset();
+      encoder.line(solidSeparator);
 
-    order.items.forEach((item) => {
-      const qtyStr = `${item.quantity} x `;
-      const priceStr = (item.price * item.quantity).toFixed(2);
-
-      let cleanedName = item.name;
-      let displayVariant = item.variant || "";
-
-      if (displayVariant && cleanedName.includes(`(${displayVariant})`)) {
-        cleanedName = cleanedName.replace(`(${displayVariant})`, "").trim();
-      } else if (
-        displayVariant &&
-        cleanedName.toLowerCase().includes(displayVariant.toLowerCase())
-      ) {
-        displayVariant = "";
-      }
-
-      let finalDisplayName =
-        (displayVariant ? displayVariant + " " : "") + cleanedName;
-      let displayNotes = item.notes;
-
-      // On Kitchen Copy, remove allergy markers like (N), (D), (G), (N),(D) etc.
-      if (copyType === "KITCHEN") {
-        finalDisplayName = removeAllergyBrackets(finalDisplayName);
-        if (displayNotes) {
-          displayNotes = removeAllergyBrackets(displayNotes);
+      order.items.forEach((item, idx) => {
+        const qtyCol = `${item.quantity || 1}x`.padEnd(5, " ");
+        const priceCol = `£${(Number(item.price || 0) * Number(item.quantity || 1)).toFixed(2)}`;
+        let cleanedName = item.name || "";
+        const displayVariant = item.variant || "";
+        if (displayVariant && cleanedName.includes(`(${displayVariant})`)) {
+          cleanedName = cleanedName.replace(`(${displayVariant})`, "").trim();
         }
-      }
 
-      if (copyType === "KITCHEN") {
-        encoder
-          .align("left")
-          .bold(true)
-          .line(formatRow(qtyStr + finalDisplayName, "", PRINTER_WIDTH))
-          .bold(false);
-      } else {
-        encoder
-          .align("left")
-          .line(formatRow(qtyStr + finalDisplayName, priceStr, PRINTER_WIDTH));
-      }
+        const variantOptions = displayVariant
+          ? displayVariant
+              .split(/\s*[•·|\n]\s*|\s*\/\s*/)
+              .map((p: string) => p.trim())
+              .filter((p: string) => p && p.toLowerCase() !== cleanedName.toLowerCase())
+          : [];
 
-      const showNotes =
-        displayNotes &&
-        (!item.variant ||
-          !displayNotes.toLowerCase().includes(item.variant.toLowerCase())) &&
-        !finalDisplayName.toLowerCase().includes(displayNotes.toLowerCase());
+        const displayNotes = item.notes ? item.notes.trim() : "";
+        const showNotes =
+          Boolean(displayNotes) &&
+          (!item.variant || !displayNotes.toLowerCase().includes(item.variant.toLowerCase())) &&
+          !cleanedName.toLowerCase().includes(displayNotes.toLowerCase());
 
-      if (showNotes) {
-        encoder.line(`  (${displayNotes})`);
-      }
-    });
+        const itemColWidth = PRINTER_WIDTH - 5 - 10; // 33 chars for item name before price
+        const nameLines = wrapLines(cleanedName, itemColWidth);
 
-    encoder.feed(1);
+        encoder.align("left").bold(true);
+        nameLines.forEach((line, lIdx) => {
+          if (lIdx === 0) {
+            const leftPart = qtyCol + line;
+            encoder.line(formatRow(leftPart, priceCol, PRINTER_WIDTH));
+          } else {
+            encoder.line("     " + line);
+          }
+        });
+        encoder.bold(false);
 
-    // 3. Totals
-    if (copyType !== "KITCHEN") {
+        variantOptions.forEach((opt: string) => {
+          wrapLines(`- ${opt}`, PRINTER_WIDTH - 5).forEach((l) =>
+            encoder.line("     " + l),
+          );
+        });
+
+        if (showNotes) {
+          encoder.bold(true);
+          wrapLines(`! NOTE: ${displayNotes}`, PRINTER_WIDTH - 5).forEach((l) =>
+            encoder.line("     " + l),
+          );
+          encoder.bold(false);
+        }
+
+        if (idx < order.items.length - 1) {
+          encoder.line(dottedSeparator);
+        }
+      });
+
+      encoder.line(dashedSeparator);
+
+      // Payment Tag
+      encoder.align("center").bold(true).line(paymentTag).reset();
+
       const subtotalVal =
         (order as any).subtotal ||
         order.total + ((order as any).discountAmount || 0);
       const stampDiscount = (order as any).stampCardDiscount || 0;
       const itemDiscount = (order as any).discountAmount || 0;
-      const intermediateTotal = subtotalVal - stampDiscount - itemDiscount;
-      const finalTotal = order.total;
+      const totalDiscount = stampDiscount + itemDiscount;
+      const serviceCharge = Number((order as any).serviceCharge || 0);
+      const deliveryFee = Number((order as any).deliveryFee || 0);
+      const bagCharge = Number((order as any).bagCharge || 0);
+      const finalTotal = Number(order.total || 0);
 
-      encoder.align("left");
-      encoder.line(formatRow("Subtotal", subtotalVal.toFixed(2), PRINTER_WIDTH));
-
-      if (stampDiscount > 0) {
-        encoder.line(
-          formatRow(
-            "StampCard discount",
-            `-${stampDiscount.toFixed(2)}`,
-            PRINTER_WIDTH,
-          ),
-        );
+      encoder.align("left").bold(false);
+      encoder.line(formatRow("Subtotal", `£${subtotalVal.toFixed(2)}`, PRINTER_WIDTH));
+      if (totalDiscount > 0) {
+        encoder.line(formatRow("Discount", `-£${totalDiscount.toFixed(2)}`, PRINTER_WIDTH));
       }
-      if (itemDiscount > 0) {
-        encoder.line(
-          formatRow(
-            "Restaurant discount",
-            `-${itemDiscount.toFixed(2)}`,
-            PRINTER_WIDTH,
-          ),
-        );
+      if (serviceCharge > 0) {
+        encoder.line(formatRow("Service Charge", `£${serviceCharge.toFixed(2)}`, PRINTER_WIDTH));
+      }
+      if (deliveryFee > 0) {
+        encoder.line(formatRow("Delivery Fee", `£${deliveryFee.toFixed(2)}`, PRINTER_WIDTH));
+      }
+      if (bagCharge > 0) {
+        encoder.line(formatRow("Bag Charge", `£${bagCharge.toFixed(2)}`, PRINTER_WIDTH));
       }
 
-      encoder.feed(1);
+      encoder.line(solidSeparator);
+      encoder.bold(true).line(formatRow("TOTAL", `£${finalTotal.toFixed(2)}`, PRINTER_WIDTH)).reset();
+      encoder.line(dashedSeparator);
 
-      encoder.line(
-        formatRow("Order total", intermediateTotal.toFixed(2), PRINTER_WIDTH),
-      );
-
-      if ((order as any).serviceCharge > 0) {
-        encoder.line(
-          formatRow(
-            "Service charge",
-            (order as any).serviceCharge.toFixed(2),
-            PRINTER_WIDTH,
-          ),
-        );
+      if (scheduleStr) {
+        encoder.align("left").bold(true).line(scheduleStr).reset();
       }
-      if ((order as any).deliveryFee > 0) {
-        encoder.line(
-          formatRow(
-            "Delivery charge",
-            (order as any).deliveryFee.toFixed(2),
-            PRINTER_WIDTH,
-          ),
+      if (order.notes && order.notes.trim()) {
+        encoder.align("left").bold(true);
+        wrapLines(`! NOTE: ${order.notes.trim()}`, PRINTER_WIDTH).forEach((l) =>
+          encoder.line(l),
         );
+        encoder.reset();
       }
-      if ((order as any).bagCharge > 0) {
-        encoder.line(
-          formatRow(
-            "Bag charge",
-            (order as any).bagCharge.toFixed(2),
-            PRINTER_WIDTH,
-          ),
-        );
-      }
-
-      encoder.feed(1);
-      encoder.align("right").line("----------");
-      encoder
-        .size(2, 2)
-        .bold(true)
-        .line(formatRow("Total Due", finalTotal.toFixed(2), 24))
-        .size(1, 1)
-        .bold(false);
-      encoder.feed(1);
-    } else {
-      encoder.feed(1).line("-".repeat(PRINTER_WIDTH)).feed(1);
-    }
-
-    // 4. Payment Info
-    encoder.align("left").bold(true).line("Paid by:");
-    const payMethod = (order.paymentMethod || "CASH")
-      .toUpperCase()
-      .replace(/_/g, " ");
-    encoder.bold(false).line(payMethod).feed(1);
-
-    // 6. Status Banner
-    const bannerText =
-      order.paymentMethod === "pay_online"
-        ? "ORDER PAID"
-        : order.paymentMethod === "card_on_collection"
-          ? "CARD ON COLLECTION"
-          : "CASH ORDER";
-
-    encoder
-      .line(separator)
-      .size(2, 2)
-      .bold(true)
-      .line(bannerText)
-      .size(1, 1)
-      .bold(false)
-      .line(separator)
-      .feed(1);
-
-    // 7. Client Info
-    encoder
-      .align("left")
-      .line(`Customer ID ${order.userId.slice(-11).toUpperCase()}`)
-      .bold(true)
-      .line("Customer details:")
-      .bold(false)
-      .size(2, 2)
-      .bold(true)
-      .line(order.customerName || "GUEST")
-      .size(1, 1)
-      .bold(false);
-
-    if (order.houseName) {
-      encoder.size(2, 2).bold(true);
-      wrapLines(order.houseName, 21).forEach((line) =>
-        encoder.line(line),
-      );
-      encoder.size(1, 1).bold(false);
-    }
-
-    if (order.streetName) {
-      encoder.size(2, 2).bold(true);
-      const streetLine =
-        `${order.houseNumber ? order.houseNumber + " " : ""}${order.streetName}`;
-      wrapLines(streetLine, 21).forEach((line) => encoder.line(line));
-
-      if (order.areaName) {
-        wrapLines(order.areaName, 21).forEach((line) =>
-          encoder.line(line),
-        );
-      }
-      if (order.postcode) {
-        wrapLines(formatPostcode(order.postcode), 21).forEach((line) =>
-          encoder.line(line),
-        );
-      }
-      encoder.size(1, 1).bold(false);
-    } else if (order.address) {
-      encoder.size(2, 2).bold(true);
-      const addrLines = order.address.split("\n");
-      addrLines.forEach((addrPart, idx) => {
-        const trimmed = addrPart.trim();
-        const isLastLine = idx === addrLines.length - 1;
-        let displayPart = addrPart;
-        if (isLastLine && trimmed.length >= 5 && trimmed.length <= 9) {
-          displayPart = formatPostcode(trimmed);
-        } else if (trimmed.length <= 9 && trimmed.length >= 5) {
-          displayPart = formatPostcode(trimmed);
-        }
-        wrapLines(displayPart, 21).forEach((line) => {
-          encoder.line(line);
+      if (addrLines.length > 0 || order.phone) {
+        encoder.align("left").bold(false);
+        addrLines.forEach((l) => {
+          wrapLines(l, PRINTER_WIDTH).forEach((wl) => encoder.line(wl));
         });
-      });
-      encoder.size(1, 1).bold(false);
+        if (order.phone) {
+          encoder.bold(true).line(`Tel: ${order.phone}`).bold(false);
+        }
+        encoder.reset();
+      }
+      if (s.infoBox1) {
+        encoder.align("center").line(s.infoBox1).reset();
+      }
+
+      encoder.line(solidSeparator);
+      // Bottom ORDER # uses doubleHeight + doubleWidth (GS ! 0x11 -> size(2, 2))
+      encoder.align("center").size(2, 2).bold(true);
+      wrapLines(`ORDER ${orderNumRaw}`, 24).forEach((l) => encoder.line(l));
+      encoder.reset().feed(3).cut();
     }
-
-    encoder
-      .feed(1)
-      .line("To contact customer call:")
-      .size(2, 2)
-      .bold(true)
-      .line(order.phone)
-      .size(1, 1)
-      .bold(false);
-
-    // 8. Footer
-    encoder
-      .line(dashedSeparator)
-      .bold(true)
-      .line(
-        `Placed: ${new Date(order.createdAt?.toMillis() || Date.now()).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`,
-      )
-      .line(
-        `Accepted: ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`,
-      )
-      .bold(false)
-      .feed(3)
-      .cut();
 
     return encoder.encode();
   };
 
-  const handlePrint = async (order: Order) => {
-    const toastId = toast.loading("Printing...");
+  const handlePrint = async (order: Order, overrideMode?: PrintMode) => {
+    const activeMode = overrideMode || printMode;
+    const toastId = toast.loading(
+      activeMode === "electron"
+        ? "Sending direct print to Electron EXE..."
+        : "Sending print job to RawBT...",
+    );
     try {
       const kitchenData = generateEscPosData(order, "KITCHEN");
       const customerData = generateEscPosData(order, "CUSTOMER");
 
-      // Combine both sets of data into one single print job
-      // This reduces browser "Continue to RawBT?" prompts from 2 to 1
-      const combined = new Uint8Array(kitchenData.length + customerData.length);
-      combined.set(customerData); // Customer receipt first
-      combined.set(kitchenData, customerData.length); // Kitchen receipt second
+      // Combine both copies into one single ESC/POS payload (Customer first, Kitchen second)
+      const combined = new Uint8Array(customerData.length + kitchenData.length);
+      combined.set(customerData);
+      combined.set(kitchenData, customerData.length);
 
-      const toBase64 = (data: Uint8Array) => {
-        let binary = "";
-        for (let i = 0; i < data.byteLength; i++) {
-          binary += String.fromCharCode(data[i]);
-        }
-        return window.btoa(binary);
-      };
+      if (activeMode === "electron") {
+        const customerHtml = generateReceiptHtml(order, "CUSTOMER");
+        const kitchenHtml = generateReceiptHtml(order, "KITCHEN");
+        const combinedHtml = wrapStandalonePrintDocument([customerHtml, kitchenHtml]);
 
-      const combinedB64 = toBase64(combined);
+        const res = await dispatchDirectElectronPrint({
+          combinedHtml,
+          customerHtml,
+          kitchenHtml,
+          escposBase64: uint8ArrayToBase64(combined),
+          customerEscPosB64: uint8ArrayToBase64(customerData),
+          kitchenEscPosB64: uint8ArrayToBase64(kitchenData),
+          orderId: order.id,
+          order,
+        });
 
-      // Print combined data in one go
-      window.location.href = `rawbt:base64,${combinedB64}`;
-
-      toast.success("Printed successfully", { id: toastId });
+        const viaLabel =
+          res.method === "electron-ipc"
+            ? "Electron IPC"
+            : res.method === "electron-bridge"
+              ? "Electron Print Bridge"
+              : "Direct Print";
+        toast.success(`Printed via ${viaLabel}`, { id: toastId });
+      } else {
+        dispatchRawBtPrint(combined);
+        toast.success("Sent to RawBT successfully", { id: toastId });
+      }
     } catch (err) {
       console.error("Print failed:", err);
-      toast.error("Print failed. Ensure RawBT app is installed.", {
-        id: toastId,
-      });
+      toast.error(
+        activeMode === "electron"
+          ? "Direct print failed. Check Electron EXE or printer settings."
+          : "Print failed. Ensure RawBT app is installed.",
+        { id: toastId },
+      );
     }
   };
 
@@ -2607,13 +3108,14 @@ export default function AdminPanel({
       <AnimatePresence>
         {newOrderPopup && (
           <motion.div
-            key={newOrderPopup.id}
+            key={`new-order-popup-${newOrderPopup.id || 'current'}`}
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             className="fixed inset-0 z-[200] flex items-center justify-center p-4 bg-black/90 backdrop-blur-md"
           >
             <motion.div
+              key={`new-order-popup-dialog-${newOrderPopup.id || 'current'}`}
               initial={{ scale: 0.9, y: 20 }}
               animate={{ scale: 1, y: 0 }}
               exit={{ scale: 0.9, y: 20 }}
@@ -2633,13 +3135,25 @@ export default function AdminPanel({
                     </p>
                   </div>
                 </div>
-                {newOrdersQueue.length > 1 && (
-                  <div className="px-6 py-3 bg-orange-600/20 border border-orange-500/20 rounded-2xl">
-                    <span className="text-orange-500 font-black text-sm italic">
-                      QUEUE: 1 OF {newOrdersQueue.length}
-                    </span>
-                  </div>
-                )}
+                <div className="flex items-center gap-3">
+                  {newOrdersQueue.length > 1 && (
+                    <div className="px-6 py-3 bg-orange-600/20 border border-orange-500/20 rounded-2xl">
+                      <span className="text-orange-500 font-black text-sm italic">
+                        QUEUE: 1 OF {newOrdersQueue.length}
+                      </span>
+                    </div>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setNewOrdersQueue((prev) => prev.filter((o) => o.id !== newOrderPopup.id));
+                    }}
+                    className="p-3 text-gray-400 hover:text-white rounded-2xl bg-white/5 hover:bg-white/10 border border-white/10 transition-colors cursor-pointer"
+                    title="Dismiss alert"
+                  >
+                    <X size={20} />
+                  </button>
+                </div>
               </div>
 
               <div className="flex-1 overflow-y-auto grid grid-cols-1 md:grid-cols-2 gap-8 mb-8">
@@ -2720,7 +3234,7 @@ export default function AdminPanel({
                     <div className="space-y-3">
                       {newOrderPopup.items?.map((item: any, idx: number) => (
                         <div
-                          key={idx}
+                          key={`${item.id || item.name}-${idx}`}
                           className="flex justify-between items-start pt-3 border-t border-white/5 first:border-0 first:pt-0"
                         >
                           <div>
@@ -2812,9 +3326,9 @@ export default function AdminPanel({
                         </div>
 
                         <div className="mt-8 grid grid-cols-3 gap-2 w-full">
-                          {[15, 20, 30, 45, 60, 90].map((mins) => (
+                          {[15, 20, 30, 45, 60, 90].map((mins, idx) => (
                             <button
-                              key={mins}
+                              key={`${mins}-${idx}`}
                               onClick={() => setEstimateInput(`${mins} mins`)}
                               className={cn(
                                 "py-3 rounded-xl text-[10px] font-black transition-all border uppercase tracking-tighter",
@@ -2833,6 +3347,16 @@ export default function AdminPanel({
 
                   <div className="flex gap-4">
                     <button
+                      type="button"
+                      onClick={() => {
+                        setNewOrdersQueue((prev) => prev.filter((o) => o.id !== newOrderPopup.id));
+                      }}
+                      className="px-6 py-5 bg-white/10 hover:bg-white/15 text-gray-300 hover:text-white rounded-2xl text-[12px] font-black uppercase tracking-wider transition-all cursor-pointer"
+                    >
+                      Dismiss
+                    </button>
+                    <button
+                      type="button"
                       onClick={() => {
                         const estimate =
                           newOrderPopup.timeSlot &&
@@ -2841,7 +3365,7 @@ export default function AdminPanel({
                             : estimateInput;
                         handleAcceptOrder(newOrderPopup.id, estimate);
                       }}
-                      className="w-full px-6 py-5 bg-orange-600 text-white rounded-2xl text-[13px] font-black hover:bg-orange-700 transition-all shadow-2xl shadow-orange-600/40 uppercase tracking-[0.2em] flex items-center justify-center gap-3"
+                      className="flex-1 px-6 py-5 bg-orange-600 text-white rounded-2xl text-[13px] font-black hover:bg-orange-700 transition-all shadow-2xl shadow-orange-600/40 uppercase tracking-[0.2em] flex items-center justify-center gap-3 cursor-pointer"
                     >
                       <Check size={20} />
                       {newOrderPopup.timeSlot &&
@@ -2958,51 +3482,82 @@ export default function AdminPanel({
               className="grid grid-cols-1 xl:grid-cols-12 gap-12 items-start"
             >
               {/* Preview Section */}
-              <div className="xl:col-span-12 2xl:col-span-5 space-y-8">
-                <div className="space-y-2">
-                  <h3 className="text-3xl font-black text-white uppercase tracking-tighter flex items-center gap-3 italic">
-                    <ImageIcon size={28} className="text-orange-600" />
-                    Visual <span className="text-orange-600">Preview</span>
-                  </h3>
-                  <p className="text-gray-500 text-xs font-bold uppercase tracking-widest leading-none">
-                    Live thermal receipt renderer
-                  </p>
+              <div className="xl:col-span-12 2xl:col-span-5 space-y-6">
+                <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
+                  <div className="space-y-2">
+                    <h3 className="text-3xl font-black text-white uppercase tracking-tighter flex items-center gap-3 italic">
+                      <ImageIcon size={28} className="text-orange-600" />
+                      Visual <span className="text-orange-600">Preview</span>
+                    </h3>
+                    <p className="text-gray-500 text-xs font-bold uppercase tracking-widest leading-none">
+                      80mm Receipt Renderer ({previewCopyType === "CUSTOMER" ? "Main Copy" : "Kitchen Copy"})
+                    </p>
+                  </div>
+                  <div className="flex gap-1.5 bg-black/40 p-1 rounded-xl border border-white/10">
+                    <button
+                      type="button"
+                      onClick={() => setPreviewCopyType("CUSTOMER")}
+                      className={cn(
+                        "px-3 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all cursor-pointer",
+                        previewCopyType === "CUSTOMER"
+                          ? "bg-orange-600 text-white"
+                          : "text-gray-400 hover:text-white",
+                      )}
+                    >
+                      Main Copy
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setPreviewCopyType("KITCHEN")}
+                      className={cn(
+                        "px-3 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all cursor-pointer",
+                        previewCopyType === "KITCHEN"
+                          ? "bg-orange-600 text-white"
+                          : "text-gray-400 hover:text-white",
+                      )}
+                    >
+                      Kitchen Copy
+                    </button>
+                  </div>
                 </div>
 
-                <div className="bg-[#1a1a1a] rounded-[3rem] p-10 shadow-[0_50px_100px_rgba(0,0,0,0.6)] border border-white/5 flex justify-center bg-gray-900/60 backdrop-blur-3xl relative overflow-visible group min-h-[500px]">
+                <div className="bg-[#1a1a1a] rounded-[3rem] p-6 sm:p-10 shadow-[0_50px_100px_rgba(0,0,0,0.6)] border border-white/5 flex justify-center bg-gray-900/60 backdrop-blur-3xl relative overflow-visible group min-h-[500px]">
                   <div className="absolute inset-0 bg-gradient-to-br from-orange-500/5 to-transparent pointer-events-none rounded-[3rem]" />
                   <div className="absolute top-0 left-1/2 -translate-x-1/2 w-32 h-1 bg-white/10 rounded-b-xl" />
 
                   <div className="relative z-10 flex justify-center">
                     <motion.div
-                      className="bg-white p-10 shadow-2xl w-[100mm] min-h-[500px] transform scale-75 sm:scale-90 md:scale-100 origin-top overflow-visible border border-gray-100 rounded-sm"
+                      className="bg-white shadow-2xl w-[80mm] min-h-[480px] py-3 px-2 overflow-visible border border-gray-200 rounded-sm"
                       initial={{ y: 20 }}
                       animate={{ y: 0 }}
                       dangerouslySetInnerHTML={{
-                        __html: generateReceiptHtml({
-                          id: "MUG-99X8A",
-                          userId: "preview-user",
-                          customerName: "Masum Ahmed",
-                          phone: "+44 7947 465085",
-                          address: "323A Lea Bridge Road\nE10 7LA",
-                          items: [
-                            {
-                              name: "Double Smash Cheeseburger",
-                              price: 9.5,
-                              quantity: 2,
-                              variant: "Beef",
-                              notes: "Extra House Sauce",
-                            },
-                            { name: "Pilau Rice", price: 3.5, quantity: 2 },
-                            { name: "Garlic Naan", price: 2.8, quantity: 1 },
-                          ],
-                          total: 34.8,
-                          status: "pending",
-                          type: "delivery",
-                          paymentMethod: "cash",
-                          notes: "Gate code 1234.",
-                          createdAt: Timestamp.now(),
-                        }),
+                        __html: generateReceiptHtml(
+                          {
+                            id: "MUG-99X8A",
+                            userId: "preview-user",
+                            customerName: "Masum Ahmed",
+                            phone: "+44 7947 465085",
+                            address: "323A Lea Bridge Road\nE10 7LA",
+                            items: [
+                              {
+                                name: "Double Smash Cheeseburger",
+                                price: 9.5,
+                                quantity: 2,
+                                variant: "Beef • Meal Deal (+ Fries, Drink) • Extra Cheese",
+                                notes: "Extra House Sauce",
+                              },
+                              { name: "Peri Grilled Chicken (N)(D)", price: 7.5, quantity: 1 },
+                              { name: "Garlic Naan", price: 2.8, quantity: 1 },
+                            ],
+                            total: 29.3,
+                            status: "pending",
+                            type: "delivery",
+                            paymentMethod: "cash",
+                            notes: "Gate code 1234.",
+                            createdAt: Timestamp.now(),
+                          },
+                          previewCopyType,
+                        ),
                       }}
                     />
                   </div>
@@ -3092,6 +3647,23 @@ export default function AdminPanel({
                             className="w-full bg-black/40 border border-white/10 rounded-xl px-5 py-4 text-sm focus:outline-none focus:border-orange-500 transition-all font-bold text-white shadow-inner"
                           />
                         </div>
+                        <div className="space-y-2">
+                          <label className="text-[10px] text-gray-500 mb-2 block uppercase font-black tracking-widest">
+                            VAT Number (Optional)
+                          </label>
+                          <input
+                            type="text"
+                            placeholder="e.g. GB 123 4567 89"
+                            value={receiptSettings.vatNumber || ""}
+                            onChange={(e) =>
+                              updateReceiptSetting(
+                                "vatNumber" as any,
+                                e.target.value,
+                              )
+                            }
+                            className="w-full bg-black/40 border border-white/10 rounded-xl px-5 py-4 text-sm focus:outline-none focus:border-orange-500 transition-all font-bold text-white shadow-inner"
+                          />
+                        </div>
                         <div className="space-y-2 pt-2 border-t border-white/5">
                           <label className="text-[10px] text-gray-500 mb-2 block uppercase font-black tracking-widest">
                             Admin Passcode (Android Bypass)
@@ -3157,18 +3729,44 @@ export default function AdminPanel({
 
                       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                         {DAY_NAMES.map((dayName, index) => {
-                          const hours =
-                            receiptSettings.businessHours?.[index] ||
-                            DEFAULT_BUSINESS_HOURS[index];
+                          const normalizedHours = normalizeBusinessHours(receiptSettings.businessHours);
+                          const hours = normalizedHours[index] || DEFAULT_BUSINESS_HOURS[index];
+                          const dayKey = dayName.toLowerCase();
                           return (
                             <div
-                              key={dayName}
-                              className="bg-black/20 p-5 rounded-2xl border border-white/5 space-y-4"
+                              key={`${dayName}-${index}`}
+                              className={cn(
+                                "p-5 rounded-2xl border space-y-4 transition-colors",
+                                hours.closed
+                                  ? "bg-red-500/5 border-red-500/20"
+                                  : "bg-black/20 border-white/5"
+                              )}
                             >
                               <div className="flex justify-between items-center">
                                 <span className="text-xs font-black uppercase tracking-widest text-orange-500">
                                   {dayName}
                                 </span>
+                                <label className="flex items-center gap-2 cursor-pointer text-[10px] uppercase font-bold text-gray-400 hover:text-white">
+                                  <input
+                                    type="checkbox"
+                                    checked={!hours.closed}
+                                    onChange={(e) => {
+                                      const isOpenDay = e.target.checked;
+                                      const updatedDay = {
+                                        ...hours,
+                                        closed: !isOpenDay,
+                                      };
+                                      const newHours = {
+                                        ...normalizedHours,
+                                        [index]: updatedDay,
+                                        [dayKey]: updatedDay,
+                                      };
+                                      updateReceiptSetting("businessHours", newHours);
+                                    }}
+                                    className="accent-orange-500 rounded"
+                                  />
+                                  <span>{hours.closed ? "Closed" : "Open"}</span>
+                                </label>
                               </div>
                               <div className="grid grid-cols-2 gap-3">
                                 <div className="space-y-1">
@@ -3178,26 +3776,26 @@ export default function AdminPanel({
                                   <input
                                     type="time"
                                     value={hours.open}
+                                    disabled={hours.closed}
                                     onChange={(e) => {
                                       const newOpen = e.target.value;
-                                      const [h, m] = newOpen
-                                        .split(":")
-                                        .map(Number);
+                                      const openMins = parseTimeToMinutes(newOpen, false);
+                                      const updatedDay = {
+                                        ...hours,
+                                        open: newOpen,
+                                        openMins,
+                                      };
                                       const newHours = {
-                                        ...(receiptSettings.businessHours ||
-                                          DEFAULT_BUSINESS_HOURS),
-                                        [index]: {
-                                          ...hours,
-                                          open: newOpen,
-                                          openMins: h * 60 + m,
-                                        },
+                                        ...normalizedHours,
+                                        [index]: updatedDay,
+                                        [dayKey]: updatedDay,
                                       };
                                       updateReceiptSetting(
                                         "businessHours",
                                         newHours,
                                       );
                                     }}
-                                    className="w-full bg-black/20 border border-white/10 rounded-lg px-2 py-2 text-xs font-bold text-white outline-none focus:border-orange-500/50"
+                                    className="w-full bg-black/20 border border-white/10 rounded-lg px-2 py-2 text-xs font-bold text-white outline-none focus:border-orange-500/50 disabled:opacity-40"
                                   />
                                 </div>
                                 <div className="space-y-1">
@@ -3207,26 +3805,26 @@ export default function AdminPanel({
                                   <input
                                     type="time"
                                     value={hours.close}
+                                    disabled={hours.closed}
                                     onChange={(e) => {
                                       const newClose = e.target.value;
-                                      const [h, m] = newClose
-                                        .split(":")
-                                        .map(Number);
+                                      const closeMins = parseTimeToMinutes(newClose, true);
+                                      const updatedDay = {
+                                        ...hours,
+                                        close: newClose,
+                                        closeMins,
+                                      };
                                       const newHours = {
-                                        ...(receiptSettings.businessHours ||
-                                          DEFAULT_BUSINESS_HOURS),
-                                        [index]: {
-                                          ...hours,
-                                          close: newClose,
-                                          closeMins: h * 60 + m,
-                                        },
+                                        ...normalizedHours,
+                                        [index]: updatedDay,
+                                        [dayKey]: updatedDay,
                                       };
                                       updateReceiptSetting(
                                         "businessHours",
                                         newHours,
                                       );
                                     }}
-                                    className="w-full bg-black/20 border border-white/10 rounded-lg px-2 py-2 text-xs font-bold text-white outline-none focus:border-orange-500/50"
+                                    className="w-full bg-black/20 border border-white/10 rounded-lg px-2 py-2 text-xs font-bold text-white outline-none focus:border-orange-500/50 disabled:opacity-40"
                                   />
                                 </div>
                               </div>
@@ -3306,9 +3904,9 @@ export default function AdminPanel({
                           </div>
                         ) : (
                           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-                            {receiptSettings.closedDates.map((item) => (
+                            {receiptSettings.closedDates.map((item, idx) => (
                               <div
-                                key={item.id}
+                                key={`${item.id || item.date}-${idx}`}
                                 className="bg-black/30 border border-white/10 rounded-xl p-4 flex items-start justify-between gap-3 group hover:border-red-500/30 transition-all"
                               >
                                 <div className="space-y-1">
@@ -3816,10 +4414,107 @@ export default function AdminPanel({
 
                   <div className="bg-white/5 border border-white/10 rounded-[2.5rem] p-8 space-y-6 md:col-span-2">
                     <h4 className="text-lg font-black uppercase tracking-tighter text-white font-black italic">
-                      <span className="text-orange-500">Delivery</span> Fee
-                      Settings
+                      <span className="text-orange-500">Order Channels</span> & Fee Settings
                     </h4>
                     <div className="space-y-6">
+                      {/* Taking Collection Orders Master Toggle */}
+                      <div className="p-6 bg-gradient-to-r from-orange-500/10 via-amber-500/5 to-black/20 rounded-2xl border border-orange-500/30 space-y-3">
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <Store className="text-orange-400" size={18} />
+                              <h5 className="text-sm font-black text-white uppercase tracking-widest">
+                                Taking Collection Orders
+                              </h5>
+                            </div>
+                            <p className="text-[11px] text-gray-400 mt-1 max-w-lg">
+                              When switched OFF, the system stops accepting collection orders. The collection option and all collection offers will be hidden from customers (delivery only).
+                            </p>
+                          </div>
+                          <div className="flex items-center gap-3 shrink-0">
+                            <span className={cn(
+                              "text-[10px] font-black uppercase tracking-wider px-3 py-1 rounded-full border",
+                              (receiptSettings.acceptCollectionOrders ?? true)
+                                ? "bg-emerald-500/15 text-emerald-400 border-emerald-500/30"
+                                : "bg-red-500/15 text-red-400 border-red-500/30"
+                            )}>
+                              {(receiptSettings.acceptCollectionOrders ?? true) ? "Active • Collection Open" : "Paused • Delivery Only"}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                updateReceiptSetting(
+                                  "acceptCollectionOrders",
+                                  !(receiptSettings.acceptCollectionOrders ?? true),
+                                )
+                              }
+                              className={cn(
+                                "w-12 h-6 rounded-full p-1 transition-all relative border border-white/10 shrink-0 cursor-pointer",
+                                (receiptSettings.acceptCollectionOrders ?? true)
+                                  ? "bg-orange-600 border-orange-500"
+                                  : "bg-black/40",
+                              )}
+                            >
+                              <motion.div
+                                className="w-4 h-4 bg-white rounded-full shadow-lg"
+                                animate={{
+                                  x: (receiptSettings.acceptCollectionOrders ?? true) ? 24 : 0,
+                                }}
+                              />
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Taking Delivery Orders System Master Toggle */}
+                      <div className="p-6 bg-gradient-to-r from-orange-500/10 via-amber-500/5 to-black/20 rounded-2xl border border-orange-500/30 space-y-3">
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <Truck className="text-orange-400" size={18} />
+                              <h5 className="text-sm font-black text-white uppercase tracking-widest">
+                                Taking Delivery Orders
+                              </h5>
+                            </div>
+                            <p className="text-[11px] text-gray-400 mt-1 max-w-lg">
+                              When switched OFF, the system stops accepting delivery orders. The delivery button and all delivery offers/banners will be hidden from customers (collection only).
+                            </p>
+                          </div>
+                          <div className="flex items-center gap-3 shrink-0">
+                            <span className={cn(
+                              "text-[10px] font-black uppercase tracking-wider px-3 py-1 rounded-full border",
+                              (receiptSettings.acceptDeliveryOrders ?? true)
+                                ? "bg-emerald-500/15 text-emerald-400 border-emerald-500/30"
+                                : "bg-red-500/15 text-red-400 border-red-500/30"
+                            )}>
+                              {(receiptSettings.acceptDeliveryOrders ?? true) ? "Active • Delivery Open" : "Paused • Collection Only"}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                updateReceiptSetting(
+                                  "acceptDeliveryOrders",
+                                  !(receiptSettings.acceptDeliveryOrders ?? true),
+                                )
+                              }
+                              className={cn(
+                                "w-12 h-6 rounded-full p-1 transition-all relative border border-white/10 shrink-0 cursor-pointer",
+                                (receiptSettings.acceptDeliveryOrders ?? true)
+                                  ? "bg-orange-600 border-orange-500"
+                                  : "bg-black/40",
+                              )}
+                            >
+                              <motion.div
+                                className="w-4 h-4 bg-white rounded-full shadow-lg"
+                                animate={{
+                                  x: (receiptSettings.acceptDeliveryOrders ?? true) ? 24 : 0,
+                                }}
+                              />
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+
                       <div className="p-6 bg-black/20 rounded-2xl border border-white/5 space-y-4">
                         <div className="flex items-center justify-between">
                           <div>
@@ -3855,7 +4550,7 @@ export default function AdminPanel({
                         {(receiptSettings.deliveryFees || []).map(
                           (rule, idx) => (
                             <div
-                              key={idx}
+                              key={`del-fee-${rule.postcode || 'rule'}-${idx}`}
                               className="p-4 bg-black/20 rounded-2xl border border-white/5 space-y-4"
                             >
                               <div className="flex items-center justify-between gap-4">
@@ -4012,9 +4707,9 @@ export default function AdminPanel({
                           label: "Accept Cash",
                           desc: "Cash Payment",
                         },
-                      ].map((opt) => (
+                      ].map((opt, idx) => (
                         <div
-                          key={opt.id}
+                          key={`${opt.id}-${idx}`}
                           className="group cursor-pointer p-4 bg-white/[0.04] border border-white/5 rounded-[1.5rem] hover:border-orange-500/40 hover:bg-orange-600/5 transition-all flex items-center justify-between gap-3"
                           onClick={() =>
                             updateReceiptSetting(
@@ -4052,6 +4747,140 @@ export default function AdminPanel({
                           </div>
                         </div>
                       ))}
+                    </div>
+                  </div>
+
+                  {/* Printer Mode: RawBT vs Direct Print (Electron EXE) */}
+                  <div className="bg-white/5 border border-white/10 rounded-[2.5rem] p-8 space-y-6 md:col-span-2">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                      <div>
+                        <h4 className="text-lg font-black uppercase tracking-tighter text-white italic flex items-center gap-2">
+                          <Printer className="text-orange-500" size={22} />
+                          <span className="text-orange-500">Printing Mode</span> &amp; Electron EXE Direct Print
+                        </h4>
+                        <p className="text-xs text-gray-400 mt-1">
+                          Choose between RawBT (Android 80mm ESC/POS Font A, 48 cols) or Direct Printing through an Electron-based Windows .exe app.
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          handlePrint({
+                            id: "MUG-99X8A",
+                            userId: "test-user",
+                            customerName: "Test Customer",
+                            phone: "07947465085",
+                            address: "323A Lea Bridge Road\nE10 7LA",
+                            items: [
+                              {
+                                name: "Double Smash Cheeseburger",
+                                price: 9.5,
+                                quantity: 2,
+                                variant: "Beef • Meal Deal (+ Fries, Drink)",
+                                notes: "Extra House Sauce",
+                              },
+                              { name: "Garlic Naan", price: 2.8, quantity: 1 },
+                            ],
+                            total: 21.8,
+                            status: "pending",
+                            type: "delivery",
+                            paymentMethod: "cash",
+                            notes: "Test receipt print",
+                            createdAt: Timestamp.now(),
+                          })
+                        }
+                        className="px-4 py-2.5 bg-orange-600 hover:bg-orange-700 text-white rounded-xl text-xs font-black uppercase tracking-wider flex items-center gap-2 transition-all cursor-pointer shrink-0"
+                      >
+                        <Printer size={14} />
+                        Test Print Both Copies
+                      </button>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <button
+                        type="button"
+                        onClick={() => handleChangePrintMode("rawbt")}
+                        className={cn(
+                          "p-5 rounded-2xl border text-left transition-all cursor-pointer flex items-start gap-4",
+                          printMode === "rawbt"
+                            ? "bg-orange-600/15 border-orange-500 text-white"
+                            : "bg-black/30 border-white/10 text-gray-400 hover:border-white/25",
+                        )}
+                      >
+                        <div className={cn(
+                          "p-3 rounded-xl shrink-0",
+                          printMode === "rawbt" ? "bg-orange-600 text-white" : "bg-white/5 text-gray-400",
+                        )}>
+                          <Smartphone size={20} />
+                        </div>
+                        <div>
+                          <div className="text-sm font-black uppercase tracking-tight text-white">
+                            RawBT (Android ESC/POS)
+                          </div>
+                          <p className="text-xs text-gray-400 mt-1">
+                            Sends raw ESC/POS via <code className="text-orange-400">rawbt:base64</code> using Epson Font A (48 cols, ESC M 0).
+                          </p>
+                        </div>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => handleChangePrintMode("electron")}
+                        className={cn(
+                          "p-5 rounded-2xl border text-left transition-all cursor-pointer flex items-start gap-4",
+                          printMode === "electron"
+                            ? "bg-orange-600/15 border-orange-500 text-white"
+                            : "bg-black/30 border-white/10 text-gray-400 hover:border-white/25",
+                        )}
+                      >
+                        <div className={cn(
+                          "p-3 rounded-xl shrink-0",
+                          printMode === "electron" ? "bg-orange-600 text-white" : "bg-white/5 text-gray-400",
+                        )}>
+                          <Monitor size={20} />
+                        </div>
+                        <div>
+                          <div className="text-sm font-black uppercase tracking-tight text-white">
+                            Direct Print (Electron EXE)
+                          </div>
+                          <p className="text-xs text-gray-400 mt-1">
+                            Prints directly via Electron IPC bridge, local Electron print server, or silent 80mm PC print frame.
+                          </p>
+                        </div>
+                      </button>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2">
+                      <div className="space-y-2">
+                        <label className="text-[10px] text-gray-400 block uppercase font-black tracking-widest">
+                          Electron Bridge HTTP URL (Optional)
+                        </label>
+                        <input
+                          type="text"
+                          placeholder="e.g. http://127.0.0.1:9100/print (leave empty for IPC / silent print)"
+                          value={electronBridgeUrl}
+                          onChange={(e) => {
+                            setElectronBridgeUrlState(e.target.value);
+                            setElectronBridgeUrl(e.target.value);
+                          }}
+                          className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 text-xs text-white focus:outline-none focus:border-orange-500 transition-colors"
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <label className="text-[10px] text-gray-400 block uppercase font-black tracking-widest">
+                          Target Thermal Printer Name (Optional)
+                        </label>
+                        <input
+                          type="text"
+                          placeholder="e.g. EPSON TM-T20III Receipt"
+                          value={electronPrinterName}
+                          onChange={(e) => {
+                            setElectronPrinterNameState(e.target.value);
+                            setElectronPrinterName(e.target.value);
+                          }}
+                          className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 text-xs text-white focus:outline-none focus:border-orange-500 transition-colors"
+                        />
+                      </div>
                     </div>
                   </div>
 
@@ -4288,7 +5117,97 @@ export default function AdminPanel({
               exit={{ opacity: 0, y: -10 }}
               className="space-y-6"
             >
-              {/* Daily Summary Section */}
+              {/* Daily Summary / Business Total + Print Mode Switcher */}
+              <div className="flex flex-wrap items-center justify-between gap-3 mb-3 px-1">
+                <div className="flex items-center gap-2">
+                  <Shield size={14} className="text-orange-500" />
+                  <span className={cn(
+                    "text-xs font-black uppercase tracking-wider",
+                    activeTab === "orders" ? "text-slate-700" : "text-gray-300"
+                  )}>
+                    Today's Business Summary
+                  </span>
+                  {isSummaryPrivate && (
+                    <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-orange-500/10 text-orange-400 border border-orange-500/20">
+                      Private
+                    </span>
+                  )}
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <div
+                    className={cn(
+                      "flex items-center p-1 rounded-xl border text-xs font-bold",
+                      activeTab === "orders"
+                        ? "bg-slate-100 border-slate-200"
+                        : "bg-white/5 border-white/10"
+                    )}
+                    title="Select receipt printing method"
+                  >
+                    <button
+                      type="button"
+                      onClick={() => handleChangePrintMode("rawbt")}
+                      className={cn(
+                        "flex items-center gap-1.5 px-2.5 py-1 rounded-lg transition-all cursor-pointer",
+                        printMode === "rawbt"
+                          ? "bg-orange-600 text-white shadow-sm"
+                          : activeTab === "orders"
+                            ? "text-slate-600 hover:text-slate-900"
+                            : "text-gray-400 hover:text-white"
+                      )}
+                    >
+                      <Smartphone size={12} />
+                      <span>RawBT</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleChangePrintMode("electron")}
+                      className={cn(
+                        "flex items-center gap-1.5 px-2.5 py-1 rounded-lg transition-all cursor-pointer",
+                        printMode === "electron"
+                          ? "bg-orange-600 text-white shadow-sm"
+                          : activeTab === "orders"
+                            ? "text-slate-600 hover:text-slate-900"
+                            : "text-gray-400 hover:text-white"
+                      )}
+                    >
+                      <Monitor size={12} />
+                      <span>Electron EXE</span>
+                    </button>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsSummaryPrivate(prev => {
+                        const next = !prev;
+                        try {
+                          localStorage.setItem("crrave_admin_summary_private", String(next));
+                        } catch {}
+                        return next;
+                      });
+                    }}
+                    className={cn(
+                      "flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer border",
+                      activeTab === "orders"
+                        ? "bg-slate-100 hover:bg-slate-200 text-slate-700 border-slate-200"
+                        : "bg-white/5 hover:bg-white/10 text-gray-300 border-white/10"
+                    )}
+                    title={isSummaryPrivate ? "Reveal business totals" : "Keep totals private"}
+                  >
+                    {isSummaryPrivate ? (
+                      <>
+                        <Eye size={13} className="text-orange-500" />
+                        <span>Show Figures</span>
+                      </>
+                    ) : (
+                      <>
+                        <EyeOff size={13} className="text-gray-400" />
+                        <span>Hide Figures (Private)</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+              </div>
               <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4 mb-8">
                 {[
                   {
@@ -4393,15 +5312,25 @@ export default function AdminPanel({
                       .reduce((sum, o) => sum + o.total, 0),
                     color: "blue",
                   },
-                ].map((stat) => (
+                ].map((stat, idx) => (
                   <div
-                    key={stat.label}
+                    key={`${stat.label}-${idx}`}
+                    onClick={() => {
+                      setIsSummaryPrivate(prev => {
+                        const next = !prev;
+                        try {
+                          localStorage.setItem("crrave_admin_summary_private", String(next));
+                        } catch {}
+                        return next;
+                      });
+                    }}
                     className={cn(
-                      "rounded-2xl p-3 sm:p-5 flex flex-col justify-between group transition-all relative overflow-hidden",
+                      "rounded-2xl p-3 sm:p-5 flex flex-col justify-between group transition-all relative overflow-hidden cursor-pointer",
                       activeTab === "orders"
                         ? "bg-white border border-slate-200 hover:border-orange-500/50 shadow-sm"
                         : "bg-white/5 border border-white/10 hover:border-orange-500/30"
                     )}
+                    title={isSummaryPrivate ? "Click to reveal numbers" : "Click to hide numbers"}
                   >
                     <div className={cn(
                       "absolute top-0 right-0 w-16 h-16 blur-3xl rounded-full -mr-8 -mt-8",
@@ -4423,14 +5352,20 @@ export default function AdminPanel({
                           activeTab === "orders" ? "bg-slate-100 text-slate-800 border border-slate-200" : "text-white bg-white/10"
                         )}
                       >
-                        {stat.value}
+                        {isSummaryPrivate ? "••" : stat.value}
                       </span>
                     </div>
                     <div className={cn(
-                      "text-xl sm:text-2xl font-black italic relative z-10 truncate",
+                      "text-xl sm:text-2xl font-black italic relative z-10 truncate tracking-tight",
                       activeTab === "orders" ? "text-slate-900" : "text-white"
                     )}>
-                      {formatPrice(stat.total)}
+                      {isSummaryPrivate ? (
+                        <span className="text-slate-400 dark:text-gray-500 tracking-widest font-mono text-lg">
+                          ••••••
+                        </span>
+                      ) : (
+                        formatPrice(stat.total)
+                      )}
                     </div>
                   </div>
                 ))}
@@ -4490,9 +5425,9 @@ export default function AdminPanel({
                           return orderDate && orderDate >= startOfToday;
                         }).length,
                       },
-                    ].map((tab) => (
+                    ].map((tab, idx) => (
                       <button
-                        key={tab.id}
+                        key={`${tab.id}-${idx}`}
                         onClick={() => setActiveOrderSubTab(tab.id as any)}
                         className={cn(
                           "flex flex-col items-center justify-center py-3 px-2 rounded-xl transition-all relative overflow-hidden group",
@@ -4541,21 +5476,6 @@ export default function AdminPanel({
                       </button>
                     ))}
                   </div>
-
-                  <button
-                    onClick={() => handleSyncStripeOrders(true)}
-                    disabled={isSyncingStripe}
-                    title="Sync and recover any Apple Pay / Card payments from Stripe into Live Orders"
-                    className={cn(
-                      "flex items-center justify-center gap-2 px-4 py-3 rounded-2xl text-xs font-bold transition-all whitespace-nowrap shadow-sm border shrink-0",
-                      activeTab === "orders"
-                        ? "bg-white hover:bg-slate-50 text-slate-700 border-slate-300 hover:border-orange-400 active:scale-95"
-                        : "bg-white/5 hover:bg-white/10 text-gray-300 border-white/10 hover:border-orange-500/40 active:scale-95"
-                    )}
-                  >
-                    <RefreshCw size={14} className={cn("text-emerald-500", isSyncingStripe && "animate-spin text-orange-500")} />
-                    <span>{isSyncingStripe ? "Checking Stripe..." : "Sync Stripe Orders"}</span>
-                  </button>
                 </div>
 
                   {/* Sub-tab Content */}
@@ -4574,7 +5494,7 @@ export default function AdminPanel({
                             const bCreated = b.createdAt?.toMillis ? b.createdAt.toMillis() : (b.createdAt?.seconds ? b.createdAt.seconds * 1000 : 0);
                             return aCreated - bCreated;
                           })
-                          .map((order) => renderOrderCard(order))}
+                          .map((order, idx) => renderOrderCard(order, false, idx))}
                         {orders.filter((o) =>
                           ["pending", "confirmed"].includes(o.status),
                         ).length === 0 && (
@@ -4602,7 +5522,7 @@ export default function AdminPanel({
                             const bCreated = b.createdAt?.toMillis ? b.createdAt.toMillis() : (b.createdAt?.seconds ? b.createdAt.seconds * 1000 : 0);
                             return aCreated - bCreated;
                           })
-                          .map((order) => renderOrderCard(order))}
+                          .map((order, idx) => renderOrderCard(order, false, idx))}
                         {orders.filter((o) =>
                           ["ready", "shipped"].includes(o.status),
                         ).length === 0 && (
@@ -4629,7 +5549,7 @@ export default function AdminPanel({
                             startOfToday.setHours(0, 0, 0, 0);
                             return dateToCheck && dateToCheck >= startOfToday;
                           })
-                          .map((order) => renderOrderCard(order, true))}
+                          .map((order, idx) => renderOrderCard(order, true, idx))}
                         {orders.filter((o) => {
                           const isCompletedStatus = ["delivered", "collected"].includes(o.status);
                           if (!isCompletedStatus) return false;
@@ -4700,7 +5620,7 @@ export default function AdminPanel({
               setEndDate(end.toISOString().split("T")[0]);
             };
 
-            const handlePrintSummary = () => {
+            const handlePrintSummary = async () => {
               const encoder = new EscPosEncoder();
               const PRINTER_WIDTH = 48;
               const dashedSeparator = "-".repeat(PRINTER_WIDTH);
@@ -4719,10 +5639,10 @@ export default function AdminPanel({
               const collectionCount = collectionOrders.length;
               const collectionSum = collectionOrders.reduce((sum, o) => sum + o.total, 0);
 
-              encoder.initialize().align("center");
-              encoder.size(2, 2).bold(true).line("CRRAVE LEYTON").size(1, 1).bold(false);
-              encoder.line("323A Lea Bridge Road, E10 7LA");
-              encoder.line("Phone: 07947465085 / 01708361952");
+              encoder.initialize().reset().align("center");
+              encoder.size(1, 2).bold(true).line(receiptSettings.businessName || "CRRAVE LEYTON").reset().align("center");
+              encoder.line(receiptSettings.headerAddress || "323A Lea Bridge Road, E10 7LA");
+              encoder.line(`Phone: ${receiptSettings.headerPhone || "07947465085 / 01708361952"}`);
               encoder.feed(1);
               encoder.bold(true).line("BUSINESS INVOICE SUMMARY").bold(false);
               encoder.line(`Period: ${startDate} to ${endDate}`);
@@ -4752,29 +5672,59 @@ export default function AdminPanel({
               encoder.line(`Cancelled Orders: ${cancelledCount}`);
               encoder.line(dashedSeparator);
 
-              encoder.align("center").italic(true).line("© 2026 Crrave Leyton");
+              encoder.align("center").bold(true).line("© 2026 Biznext Technology Ltd").bold(false);
               encoder.line("Confidential Business Report");
               
-              encoder.feed(3).cut();
+              encoder.reset().feed(3).cut();
 
               const bytes = encoder.encode();
-              
-              const toBase64 = (data: Uint8Array) => {
-                let binary = "";
-                for (let i = 0; i < data.byteLength; i++) {
-                  binary += String.fromCharCode(data[i]);
-                }
-                return window.btoa(binary);
-              };
+              const toastId = toast.loading(
+                printMode === "electron"
+                  ? "Sending summary to Electron EXE..."
+                  : "Printing summary through RawBT...",
+              );
 
-              const toastId = toast.loading("Printing summary through RawBT...");
               try {
-                const b64 = toBase64(bytes);
-                window.location.href = `rawbt:base64,${b64}`;
-                toast.success("Printed successfully", { id: toastId });
+                if (printMode === "electron") {
+                  const summaryHtml = wrapStandalonePrintDocument([
+                    `<div style="font-family: Arial, Helvetica, sans-serif; width: 70mm; padding: 1mm 1.5mm 6mm 1.5mm; margin: 0 auto; color: #000; background: #fff; box-sizing: border-box;">
+                      <div style="font-size: 17px; font-weight: 900; text-align: center; letter-spacing: 0.5px;">** ${escapeHtml(receiptSettings.businessName || "Crrave Leyton")} **</div>
+                      <div style="font-size: 13.5px; font-weight: 700; text-align: center;">${escapeHtml(receiptSettings.headerAddress || "323A Lea Bridge Road, E10 7LA")}</div>
+                      <div style="font-size: 13.5px; font-weight: 700; text-align: center;">Tel: ${escapeHtml(receiptSettings.headerPhone || "07947465085 / 01708361952")}</div>
+                      <div style="border-top: 1.5px dashed #000; margin: 6px 0;"></div>
+                      <div style="font-size: 15px; font-weight: 900; text-align: center;">BUSINESS INVOICE SUMMARY</div>
+                      <div style="font-size: 13px; font-weight: 700; text-align: center;">Period: ${escapeHtml(startDate)} to ${escapeHtml(endDate)}</div>
+                      <div style="border-top: 2px solid #000; margin: 6px 0;"></div>
+                      <div style="display: flex; justify-content: space-between; font-size: 13px; font-weight: 700;"><span>Cash Paid (${cashCount})</span><span>&pound;${cashSum.toFixed(2)}</span></div>
+                      <div style="display: flex; justify-content: space-between; font-size: 13px; font-weight: 700;"><span>Card Payments (${cardCount})</span><span>&pound;${cardSum.toFixed(2)}</span></div>
+                      <div style="display: flex; justify-content: space-between; font-size: 13px; font-weight: 700;"><span>Online Paid (${onlineCount})</span><span>&pound;${onlineSum.toFixed(2)}</span></div>
+                      <div style="display: flex; justify-content: space-between; font-size: 13px; font-weight: 700;"><span>Card on Coll. (${cardOnCollectionCount})</span><span>&pound;${cardOnCollectionSum.toFixed(2)}</span></div>
+                      <div style="display: flex; justify-content: space-between; font-size: 15.5px; font-weight: 900; border-top: 2px solid #000; padding-top: 4px; margin-top: 4px;"><span>TOTAL REVENUE (${successfulCount})</span><span>&pound;${totalSum.toFixed(2)}</span></div>
+                      <div style="border-top: 1.5px dashed #000; margin: 6px 0;"></div>
+                      <div style="display: flex; justify-content: space-between; font-size: 13px; font-weight: 700;"><span>Delivery Orders (${deliveryCount})</span><span>&pound;${deliverySum.toFixed(2)}</span></div>
+                      <div style="display: flex; justify-content: space-between; font-size: 13px; font-weight: 700;"><span>Collection Orders (${collectionCount})</span><span>&pound;${collectionSum.toFixed(2)}</span></div>
+                      <div style="font-size: 13px; font-weight: 700; margin-top: 4px;">Cancelled Orders: ${cancelledCount} (of ${totalCount})</div>
+                      <div style="border-top: 2px solid #000; margin: 6px 0;"></div>
+                      <div style="font-size: 13px; font-weight: 800; text-align: center;">&copy; 2026 Biznext Technology Ltd</div>
+                    </div>`
+                  ]);
+                  await dispatchDirectElectronPrint({
+                    combinedHtml: summaryHtml,
+                    escposBase64: uint8ArrayToBase64(bytes),
+                  });
+                  toast.success("Printed summary via Electron EXE", { id: toastId });
+                } else {
+                  dispatchRawBtPrint(bytes);
+                  toast.success("Printed successfully", { id: toastId });
+                }
               } catch (err) {
                 console.error("Print failed:", err);
-                toast.error("Print failed. Ensure RawBT app is installed.", { id: toastId });
+                toast.error(
+                  printMode === "electron"
+                    ? "Direct print failed."
+                    : "Print failed. Ensure RawBT app is installed.",
+                  { id: toastId },
+                );
               }
             };
 
@@ -4794,7 +5744,7 @@ export default function AdminPanel({
                       <p className="text-sm text-gray-400">Choose custom date range or select a preset below to generate the business summary.</p>
                     </div>
                     <div className="flex flex-wrap gap-2">
-                      {(["today", "yesterday", "past7", "thisWeek", "thisMonth"] as const).map((preset) => {
+                      {(["today", "yesterday", "past7", "thisWeek", "thisMonth"] as const).map((preset, idx) => {
                         const labels = {
                           today: "Today",
                           yesterday: "Yesterday",
@@ -4804,7 +5754,7 @@ export default function AdminPanel({
                         };
                         return (
                           <button
-                            key={preset}
+                            key={`${preset}-${idx}`}
                             onClick={() => setPresetRange(preset)}
                             className="px-3 py-1.5 bg-white/5 hover:bg-orange-600/20 hover:text-orange-500 border border-white/10 rounded-xl text-xs font-bold uppercase tracking-wider transition-all cursor-pointer text-white"
                           >
@@ -4969,9 +5919,9 @@ export default function AdminPanel({
                         Showing {historyOrders.length} records
                       </span>
                     </div>
-                    {historyOrders.map((order) => (
+                    {historyOrders.map((order, idx) => (
                       <div
-                        key={order.id}
+                        key={`${order.id}-${idx}`}
                         className="bg-white/5 border border-white/10 rounded-2xl p-6 opacity-90 hover:opacity-100 transition-all"
                       >
                         <div className="flex flex-col md:flex-row justify-between gap-6">
@@ -5039,7 +5989,7 @@ export default function AdminPanel({
                                 <ul className="space-y-1">
                                   {order.items.map((item: any, i: number) => (
                                     <li
-                                      key={i}
+                                      key={`hist-${order.id}-item-${i}-${item.id || item.name || 'item'}`}
                                       className="text-sm text-gray-300 flex flex-col mb-1 capitalize"
                                     >
                                       <span className="font-bold">
@@ -5115,7 +6065,7 @@ export default function AdminPanel({
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
                 {categories.map((cat, index) => (
                   <div
-                    key={cat.id}
+                    key={`${cat.id || cat.name}-${index}`}
                     className="bg-[#1a1a1a] border border-white/10 rounded-2xl p-6 flex flex-col gap-4 group hover:border-orange-500/30 transition-all shadow-xl"
                   >
                     <div className="flex justify-between items-center">
@@ -5190,17 +6140,17 @@ export default function AdminPanel({
                         <option value="" className="bg-[#0f0f0f]">
                           SEARCH FOR DISH...
                         </option>
-                        {categories.map((cat) => (
+                        {categories.map((cat, catIdx) => (
                           <optgroup
-                            key={cat.id}
+                            key={`${cat.id || cat.name}-${catIdx}`}
                             label={cat.name.toUpperCase()}
                             className="bg-[#0f0f0f] text-gray-500 py-2"
                           >
                             {menuItems
                               .filter((i) => i.category === cat.name)
-                              .map((item) => (
+                              .map((item, itemIdx) => (
                                 <option
-                                  key={item.id}
+                                  key={`${item.id}-${itemIdx}`}
                                   value={item.id}
                                   className="bg-[#0f0f0f] text-white"
                                 >
@@ -5263,9 +6213,9 @@ export default function AdminPanel({
                         <option value="" disabled className="bg-[#0f0f0f]">
                           SELECT CATEGORY...
                         </option>
-                        {categories.map((cat) => (
+                        {categories.map((cat, catIdx) => (
                           <option
-                            key={cat.id}
+                            key={`${cat.id || cat.name}-${catIdx}`}
                             value={cat.name}
                             className="bg-[#0f0f0f]"
                           >
@@ -5400,14 +6350,14 @@ export default function AdminPanel({
                   )}
                 </div>
                 <div className="space-y-12">
-                  {categories.map((cat) => {
+                  {categories.map((cat, catIdx) => {
                     const itemsInCategory = menuItems.filter(
                       (item) => item.category === cat.name,
                     );
                     if (itemsInCategory.length === 0) return null;
 
                     return (
-                      <div key={cat.id} className="space-y-6">
+                      <div key={`${cat.id || cat.name}-${catIdx}`} className="space-y-6">
                         <div className="flex items-center gap-4">
                           <h4 className="text-2xl font-black italic uppercase tracking-tighter text-white">
                             {cat.name}{" "}
@@ -5419,7 +6369,7 @@ export default function AdminPanel({
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                           {itemsInCategory.map((item, idx) => (
                             <div
-                              key={item.id}
+                              key={`${item.id}-${idx}`}
                               className="bg-white/5 border border-white/10 rounded-2xl p-5 flex items-center gap-4 group hover:border-orange-500/30 transition-all"
                             >
                               {item.image && (

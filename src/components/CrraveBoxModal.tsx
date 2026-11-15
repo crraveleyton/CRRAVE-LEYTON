@@ -1,7 +1,9 @@
 import React, { useState, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'motion/react';
 import { ArrowLeft, X, Minus, Plus, Check } from 'lucide-react';
 import { formatPrice, cn } from '../lib/utils';
+import { ItemImageBanner } from './ItemImageBanner';
 
 export interface CrraveBoxItem {
   id: string;
@@ -10,6 +12,7 @@ export interface CrraveBoxItem {
   description?: string;
   category?: string;
   image?: string;
+  heroImage?: string;
 }
 
 interface CrraveBoxModalProps {
@@ -98,15 +101,18 @@ export const CrraveBoxModal: React.FC<CrraveBoxModalProps> = ({
   if (!isOpen || !item) return null;
 
   const basePrice = item.price || 10.0;
-  const burgerObj = BURGER_OPTIONS.find((b) => b.name === selectedBurger);
-  const burgerExtra = burgerObj ? burgerObj.extraPrice : 0;
 
-  const extrasCost = selectedExtras.reduce((sum, extraName) => {
-    const ext = EXTRA_OPTIONS.find((e) => e.name === extraName);
-    return sum + (ext ? ext.price : 0);
+  // Extra price for chosen burger
+  const burgerExtra =
+    BURGER_OPTIONS.find((b) => b.name === selectedBurger)?.extraPrice || 0;
+
+  // Extra price for chosen extras
+  const extrasTotal = selectedExtras.reduce((sum, extraName) => {
+    const extra = EXTRA_OPTIONS.find((e) => e.name === extraName);
+    return sum + (extra ? extra.price : 0);
   }, 0);
 
-  const singleUnitTotal = basePrice + burgerExtra + extrasCost;
+  const singleUnitTotal = basePrice + burgerExtra + extrasTotal;
   const grandTotal = singleUnitTotal * quantity;
 
   const handleToggleExtra = (extraName: string) => {
@@ -132,33 +138,34 @@ export const CrraveBoxModal: React.FC<CrraveBoxModalProps> = ({
       name: item.name,
       price: singleUnitTotal,
       variant: variantParts.join(' | '),
-      quantity: quantity,
+      quantity,
     });
+
     onClose();
   };
 
-  return (
-    <AnimatePresence>
-      <div className="fixed inset-0 z-[120] flex items-center justify-center p-0 sm:p-4">
-        {/* Backdrop */}
-        <motion.div
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          exit={{ opacity: 0 }}
-          onClick={onClose}
-          className="fixed inset-0 bg-black/80 backdrop-blur-sm"
-        />
+  if (typeof document === 'undefined') return null;
 
+  return createPortal(
+    <AnimatePresence>
+      {/* Outer wrapper: clicking on backdrop or side of screen closes popup */}
+      <div
+        key="crravebox-portal-root"
+        className="fixed inset-0 z-[200] flex items-center justify-center p-0 sm:p-4 bg-black/85 backdrop-blur-sm overflow-hidden"
+        onClick={onClose}
+      >
         {/* Modal Window */}
         <motion.div
+          key="crravebox-modal-dialog"
           initial={{ opacity: 0, scale: 0.95, y: 20 }}
           animate={{ opacity: 1, scale: 1, y: 0 }}
           exit={{ opacity: 0, scale: 0.95, y: 20 }}
           transition={{ duration: 0.2, ease: 'easeOut' }}
-          className="relative w-full max-w-lg bg-[#000000] text-white sm:rounded-2xl shadow-2xl border border-zinc-800 flex flex-col max-h-[100dvh] sm:max-h-[92vh] overflow-hidden z-10"
+          onClick={(e) => e.stopPropagation()}
+          className="relative w-full max-w-lg bg-[#000000] text-white sm:rounded-2xl shadow-2xl border border-zinc-800 flex flex-col max-h-[100dvh] sm:max-h-[90vh] overflow-hidden z-10"
         >
-          {/* Top Bar */}
-          <div className="relative flex items-center justify-between px-5 py-4 border-b border-zinc-900 bg-[#000000] shrink-0">
+          {/* Top Bar - explicitly sticky, highest z-index inside modal */}
+          <div className="sticky top-0 z-30 flex items-center justify-between px-5 py-4 border-b border-zinc-900 bg-[#000000] shrink-0">
             {step > 1 ? (
               <button
                 type="button"
@@ -172,13 +179,9 @@ export const CrraveBoxModal: React.FC<CrraveBoxModalProps> = ({
               <div className="w-6" />
             )}
 
-            {step > 1 ? (
-              <h1 className="font-semibold text-base sm:text-lg text-white tracking-tight truncate max-w-[280px]">
-                {item.name}
-              </h1>
-            ) : (
-              <div className="flex-1" />
-            )}
+            <h1 className="font-semibold text-base sm:text-lg text-white tracking-tight truncate max-w-[280px]">
+              {item.name}
+            </h1>
 
             <button
               type="button"
@@ -190,36 +193,34 @@ export const CrraveBoxModal: React.FC<CrraveBoxModalProps> = ({
             </button>
           </div>
 
-          {/* Modal Body */}
-          <div className="flex-1 overflow-y-auto">
+          {/* Modal Body - Single Scrollable Container (NO nested scrollbar!) */}
+          <div className="flex-1 overflow-y-auto p-5 sm:p-6 space-y-5">
             {/* STEP 1: SELECT BURGER – CHOOSE ONE */}
             {step === 1 && (
-              <div className="p-5 sm:p-6 space-y-4">
+              <div className="space-y-4">
+                <ItemImageBanner image={item.image || item.heroImage} name={item.name} />
                 <div>
-                  <h2 className="text-2xl font-bold text-white tracking-tight">
+                  <h2 className="text-xl sm:text-2xl font-bold text-white tracking-tight">
                     {item.name}
                   </h2>
-                  <p className="text-base text-zinc-300 mt-2 font-medium">
+                  <p className="text-sm sm:text-base text-zinc-300 mt-2 font-medium">
                     Select Burger – Choose one
                   </p>
                 </div>
 
-                {/* 2-column on sm/desktop, compact list on mobile to eliminate excessive scrolling */}
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1 max-h-[58vh] sm:max-h-[62vh] overflow-y-auto pr-1">
-                  {BURGER_OPTIONS.map((burger) => {
+                {/* Single scroll list (NO max-h or inner overflow-y-auto) */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1">
+                  {BURGER_OPTIONS.map((burger, bIdx) => {
                     const isSelected = selectedBurger === burger.name;
                     return (
                       <label
-                        key={burger.id}
-                        onClick={() => {
-                          setSelectedBurger(burger.name);
-                          setTimeout(() => setStep(2), 120);
-                        }}
+                        key={`${burger.id}-${bIdx}`}
+                        onClick={() => setSelectedBurger(burger.name)}
                         className={cn(
                           'flex items-center justify-between p-3 rounded-xl border transition-all cursor-pointer select-none',
                           isSelected
                             ? 'bg-zinc-900 border-[#f5a623]'
-                            : 'bg-zinc-950 border-zinc-800/80 hover:border-zinc-700 hover:bg-zinc-900/50'
+                            : 'bg-black border-zinc-800/80 hover:border-zinc-700 hover:bg-zinc-900/50'
                         )}
                       >
                         <div className="flex items-center gap-2.5 min-w-0">
@@ -235,7 +236,7 @@ export const CrraveBoxModal: React.FC<CrraveBoxModalProps> = ({
                               <div className="w-1.5 h-1.5 rounded-full bg-black" />
                             )}
                           </div>
-                          <span className="font-medium text-xs sm:text-sm text-white truncate">
+                          <span className="font-normal text-xs sm:text-sm text-white truncate">
                             {burger.name}
                           </span>
                         </div>
@@ -253,7 +254,7 @@ export const CrraveBoxModal: React.FC<CrraveBoxModalProps> = ({
 
             {/* STEP 2: EXTRAS – CHOOSE UP TO 3 */}
             {step === 2 && (
-              <div className="p-5 sm:p-6 space-y-5">
+              <div className="space-y-5">
                 <div>
                   <h3 className="text-base sm:text-lg font-bold text-white">
                     Extras – Choose up to 3
@@ -261,17 +262,17 @@ export const CrraveBoxModal: React.FC<CrraveBoxModalProps> = ({
                 </div>
 
                 <div className="space-y-2.5">
-                  {EXTRA_OPTIONS.map((extra) => {
+                  {EXTRA_OPTIONS.map((extra, eIdx) => {
                     const isChecked = selectedExtras.includes(extra.name);
                     return (
                       <label
-                        key={extra.id}
+                        key={`${extra.id}-${eIdx}`}
                         onClick={() => handleToggleExtra(extra.name)}
                         className={cn(
                           'flex items-center justify-between p-3.5 rounded-xl border transition-all cursor-pointer select-none',
                           isChecked
                             ? 'bg-zinc-900 border-[#f5a623]'
-                            : 'bg-zinc-950 border-zinc-800/80 hover:border-zinc-700 hover:bg-zinc-900/50'
+                            : 'bg-black border-zinc-800/80 hover:border-zinc-700 hover:bg-zinc-900/50'
                         )}
                       >
                         <div className="flex items-center gap-3">
@@ -285,7 +286,7 @@ export const CrraveBoxModal: React.FC<CrraveBoxModalProps> = ({
                           >
                             {isChecked && <Check size={14} strokeWidth={3} />}
                           </div>
-                          <span className="font-medium text-sm sm:text-base text-white">
+                          <span className="font-normal text-sm sm:text-base text-white">
                             {extra.name}
                           </span>
                         </div>
@@ -307,11 +308,11 @@ export const CrraveBoxModal: React.FC<CrraveBoxModalProps> = ({
                     </span>
                   </div>
                   <div className="text-sm text-zinc-300 pl-1">{selectedBurger}</div>
-                  {selectedExtras.map((extraName) => {
+                  {selectedExtras.map((extraName, idx) => {
                     const ext = EXTRA_OPTIONS.find((e) => e.name === extraName);
                     return (
                       <div
-                        key={extraName}
+                        key={`crrave-s2-extra-${extraName}-${idx}`}
                         className="flex justify-between items-center text-xs text-zinc-300 pt-1 border-t border-zinc-700/60"
                       >
                         <span>{extraName}</span>
@@ -325,31 +326,28 @@ export const CrraveBoxModal: React.FC<CrraveBoxModalProps> = ({
 
             {/* STEP 3: CHOOSE YOUR DRINK – CHOOSE ONE */}
             {step === 3 && (
-              <div className="p-5 sm:p-6 space-y-5">
+              <div className="space-y-5">
                 <div>
                   <h3 className="text-base sm:text-lg font-bold text-white">
                     Choose your Drink – Choose one
                   </h3>
                 </div>
 
-                <div className="space-y-2 max-h-[42vh] overflow-y-auto pr-1">
-                  {DRINK_OPTIONS.map((drink) => {
+                <div className="space-y-2">
+                  {DRINK_OPTIONS.map((drink, dIdx) => {
                     const isSelected = selectedDrink === drink;
                     return (
                       <label
-                        key={drink}
-                        onClick={() => {
-                          setSelectedDrink(drink);
-                          setTimeout(() => setStep(4), 120);
-                        }}
+                        key={`${drink}-${dIdx}`}
+                        onClick={() => setSelectedDrink(drink)}
                         className={cn(
-                          'flex items-center justify-between p-3 rounded-xl border transition-all cursor-pointer select-none',
+                          'flex items-center justify-between p-3.5 rounded-xl border transition-all cursor-pointer select-none',
                           isSelected
                             ? 'bg-zinc-900 border-[#f5a623]'
-                            : 'bg-zinc-950 border-zinc-800/80 hover:border-zinc-700 hover:bg-zinc-900/50'
+                            : 'bg-black border-zinc-800/80 hover:border-zinc-700 hover:bg-zinc-900/50'
                         )}
                       >
-                        <span className="font-medium text-sm text-white">
+                        <span className="font-normal text-sm sm:text-base text-white">
                           {drink}
                         </span>
                         <div
@@ -357,7 +355,7 @@ export const CrraveBoxModal: React.FC<CrraveBoxModalProps> = ({
                             'w-5 h-5 rounded-full border-2 flex items-center justify-center transition-all shrink-0 ml-3',
                             isSelected
                               ? 'border-[#f5a623] bg-[#f5a623]'
-                              : 'border-zinc-600 bg-transparent'
+                              : 'border-zinc-500 bg-transparent'
                           )}
                         >
                           {isSelected && (
@@ -379,11 +377,11 @@ export const CrraveBoxModal: React.FC<CrraveBoxModalProps> = ({
                     </span>
                   </div>
                   <div className="text-sm text-zinc-300 pl-1">{selectedBurger}</div>
-                  {selectedExtras.map((extraName) => {
+                  {selectedExtras.map((extraName, idx) => {
                     const ext = EXTRA_OPTIONS.find((e) => e.name === extraName);
                     return (
                       <div
-                        key={extraName}
+                        key={`crrave-s3-extra-${extraName}-${idx}`}
                         className="flex justify-between items-center text-xs text-zinc-300 pt-1 border-t border-zinc-700/60"
                       >
                         <span>{extraName}</span>
@@ -397,14 +395,13 @@ export const CrraveBoxModal: React.FC<CrraveBoxModalProps> = ({
 
             {/* STEP 4: FINAL SUMMARY REVIEW */}
             {step === 4 && (
-              <div className="p-5 sm:p-6 space-y-6">
+              <div className="space-y-5">
                 <div>
                   <h3 className="text-xl font-bold text-white tracking-tight">
                     Summary
                   </h3>
                 </div>
 
-                {/* Summary List */}
                 <div className="space-y-3 pt-1">
                   <div className="flex justify-between items-center text-base font-medium">
                     <span className="text-white">{item.name}</span>
@@ -415,11 +412,11 @@ export const CrraveBoxModal: React.FC<CrraveBoxModalProps> = ({
 
                   <div className="text-sm text-zinc-300 pl-1">{selectedBurger}</div>
 
-                  {selectedExtras.map((extraName) => {
+                  {selectedExtras.map((extraName, idx) => {
                     const ext = EXTRA_OPTIONS.find((e) => e.name === extraName);
                     return (
                       <div
-                        key={extraName}
+                        key={`crrave-s4-extra-${extraName}-${idx}`}
                         className="flex justify-between items-center text-sm text-zinc-300 pl-1"
                       >
                         <span>{extraName}</span>
@@ -435,38 +432,15 @@ export const CrraveBoxModal: React.FC<CrraveBoxModalProps> = ({
           </div>
 
           {/* Bottom Bar */}
-          {/* Step 1: Total display with Next button */}
           {step === 1 && (
-            <div className="border-t border-zinc-900 bg-[#000000] px-6 py-4 shrink-0 flex items-center justify-between">
+            <div className="border-t border-zinc-900 bg-[#000000] px-6 py-4 shrink-0 flex items-center justify-between gap-4">
               <button
                 type="button"
                 onClick={() => setStep(2)}
-                className="text-xs font-bold text-zinc-400 hover:text-white transition-colors cursor-pointer"
+                className="flex-1 py-3.5 bg-[#f5a623] hover:bg-[#e09612] text-black font-bold rounded-xl text-center text-sm transition-all cursor-pointer active:scale-[0.98] shadow-md shadow-amber-500/10"
               >
-                Next &gt;
+                Next
               </button>
-              <div className="text-right">
-                <span className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest block">
-                  TOTAL
-                </span>
-                <span className="font-bold text-base sm:text-lg text-white">
-                  {formatPrice(singleUnitTotal)}
-                </span>
-              </div>
-            </div>
-          )}
-
-          {/* Step 2: Skip or Next button matching Screenshot 2 */}
-          {step === 2 && (
-            <div className="border-t border-zinc-900 bg-[#000000] px-5 py-4 shrink-0 flex items-center gap-4">
-              <button
-                type="button"
-                onClick={() => setStep(3)}
-                className="flex-1 py-3.5 px-4 rounded-xl bg-[#f5a623] hover:bg-[#e0961b] text-black font-bold text-base transition-transform active:scale-98 shadow-lg cursor-pointer text-center"
-              >
-                {selectedExtras.length > 0 ? 'Next' : 'Skip'}
-              </button>
-
               <div className="text-right shrink-0">
                 <span className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest block">
                   TOTAL
@@ -478,17 +452,16 @@ export const CrraveBoxModal: React.FC<CrraveBoxModalProps> = ({
             </div>
           )}
 
-          {/* Step 3: Drink selection total bar */}
-          {step === 3 && (
-            <div className="border-t border-zinc-900 bg-[#000000] px-6 py-4 shrink-0 flex items-center justify-between">
+          {step === 2 && (
+            <div className="border-t border-zinc-900 bg-[#000000] px-6 py-4 shrink-0 flex items-center justify-between gap-4">
               <button
                 type="button"
-                onClick={() => setStep(4)}
-                className="text-xs font-bold text-zinc-400 hover:text-white transition-colors cursor-pointer"
+                onClick={() => setStep(3)}
+                className="flex-1 py-3.5 bg-[#f5a623] hover:bg-[#e09612] text-black font-semibold rounded-xl text-center text-sm transition-all cursor-pointer active:scale-[0.98]"
               >
-                Next &gt;
+                {selectedExtras.length === 0 ? 'Skip' : 'Continue'}
               </button>
-              <div className="text-right">
+              <div className="text-right shrink-0">
                 <span className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest block">
                   TOTAL
                 </span>
@@ -499,46 +472,64 @@ export const CrraveBoxModal: React.FC<CrraveBoxModalProps> = ({
             </div>
           )}
 
-          {/* Step 4: Final Summary Review & Quantity Pill */}
+          {step === 3 && (
+            <div className="border-t border-zinc-900 bg-[#000000] px-6 py-4 shrink-0 flex items-center justify-between gap-4">
+              <button
+                type="button"
+                onClick={() => setStep(4)}
+                className="flex-1 py-3.5 bg-[#f5a623] hover:bg-[#e09612] text-black font-bold rounded-xl text-center text-sm transition-all cursor-pointer active:scale-[0.98] shadow-md shadow-amber-500/10"
+              >
+                Next
+              </button>
+              <div className="text-right shrink-0">
+                <span className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest block">
+                  TOTAL
+                </span>
+                <span className="font-bold text-base sm:text-lg text-white">
+                  {formatPrice(singleUnitTotal)}
+                </span>
+              </div>
+            </div>
+          )}
+
           {step === 4 && (
             <div className="border-t border-zinc-900 bg-[#000000] px-5 py-4 shrink-0 flex items-center gap-3">
-              {/* Quantity Pill */}
-              <div className="flex items-center gap-2 bg-zinc-800 border border-zinc-700/80 px-2 py-1.5 rounded-lg shrink-0">
+              <div className="flex items-center bg-[#2b2b2b] rounded-xl px-2 py-1.5 shrink-0">
                 <button
                   type="button"
                   onClick={() => setQuantity((q) => Math.max(1, q - 1))}
+                  className="w-8 h-8 flex items-center justify-center text-white hover:text-gray-300 disabled:opacity-40 cursor-pointer"
                   disabled={quantity <= 1}
-                  className="w-8 h-8 rounded-full bg-zinc-700/80 hover:bg-zinc-600 disabled:opacity-40 flex items-center justify-center text-white transition-colors cursor-pointer"
                   aria-label="Decrease quantity"
                 >
-                  <Minus size={14} />
+                  <Minus size={16} />
                 </button>
-                <span className="font-bold text-base text-white px-2 min-w-[20px] text-center">
+                <span className="w-8 text-center font-bold text-sm text-white">
                   {quantity}
                 </span>
                 <button
                   type="button"
                   onClick={() => setQuantity((q) => q + 1)}
-                  className="w-8 h-8 rounded-full bg-zinc-700/80 hover:bg-zinc-600 flex items-center justify-center text-white transition-colors cursor-pointer"
+                  className="w-8 h-8 flex items-center justify-center text-white hover:text-gray-300 cursor-pointer"
                   aria-label="Increase quantity"
                 >
-                  <Plus size={14} />
+                  <Plus size={16} />
                 </button>
               </div>
 
-              {/* Add to Basket Amber Button */}
               <button
                 type="button"
                 onClick={handleFinishAndAdd}
-                className="flex-1 py-3.5 px-5 rounded-lg bg-[#f5a623] hover:bg-[#e0961b] text-black font-black text-base transition-transform active:scale-98 shadow-lg flex items-center justify-between cursor-pointer"
+                className="flex-1 py-3.5 bg-[#f5a623] hover:bg-[#e09612] text-black font-bold rounded-xl text-sm transition-all cursor-pointer flex items-center justify-between px-5 active:scale-[0.98]"
               >
                 <span>Add to basket</span>
-                <span className="font-black">{formatPrice(grandTotal)}</span>
+                <span className="font-extrabold">{formatPrice(grandTotal)}</span>
               </button>
             </div>
           )}
         </motion.div>
       </div>
-    </AnimatePresence>
+    </AnimatePresence>,
+    document.body
   );
 };

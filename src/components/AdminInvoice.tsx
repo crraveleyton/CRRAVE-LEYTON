@@ -4,6 +4,7 @@ import { db } from "../firebase";
 import { Order } from "../types";
 import { Calendar, Printer, ArrowLeft, FileText, CheckCircle2, ShieldCheck, Loader2 } from "lucide-react";
 import { formatPrice } from "../lib/utils";
+import biznextLogo from "../assets/images/biznext_logo_1788111439149.jpg";
 
 interface AdminInvoiceProps {
   onBack?: () => void;
@@ -309,7 +310,7 @@ export const AdminInvoice: React.FC<AdminInvoiceProps> = ({ onBack }) => {
               <div className="pt-6 flex flex-col items-center justify-center">
                 <div className="flex items-center gap-3 px-5 py-2.5 bg-white/90 rounded-2xl border border-slate-300 shadow-sm">
                   <img
-                    src="/biznext_logo.png"
+                    src={biznextLogo}
                     alt="Biznext Technology Ltd"
                     className="h-10 w-auto object-contain"
                     onError={(e) => {
@@ -364,7 +365,7 @@ export const AdminInvoice: React.FC<AdminInvoiceProps> = ({ onBack }) => {
               {/* Left Logo / Company (Logo in place of text) */}
               <div className="flex items-center">
                 <img
-                  src="/biznext_logo.png"
+                  src={biznextLogo}
                   alt="Biznext Technology Ltd"
                   className="h-20 sm:h-24 w-auto object-contain max-w-[240px]"
                 />
@@ -437,7 +438,7 @@ export const AdminInvoice: React.FC<AdminInvoiceProps> = ({ onBack }) => {
 
                         return (
                           <tr
-                            key={order.id || idx}
+                            key={`${order.id || 'inv'}-${idx}`}
                             className={idx % 2 === 0 ? "bg-white" : "bg-slate-50/50"}
                           >
                             <td className="py-2 px-3 text-slate-700 whitespace-nowrap">

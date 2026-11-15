@@ -22,6 +22,7 @@ export interface CrraveMenuItemData {
     | 'wrap-doner'
     | 'wrap-sauce'
     | 'loaded-fries'
+    | 'fries-or-tots'
     | 'cheese-fries-tots'
     | 'kids-meal'
     | 'munch-box'
@@ -39,11 +40,12 @@ export const CRRAVE_CATEGORIES = [
   { id: 'cat-meal-deals', name: 'MEAL DEALS & BOXES', order: 6 },
   { id: 'cat-kids-meals', name: 'KIDS MEALS', order: 7 },
   { id: 'cat-salads', name: 'SALADS', order: 8 },
-  { id: 'cat-sides', name: 'SIDES', order: 9 },
-  { id: 'cat-sauces', name: 'SAUCES', order: 10 },
-  { id: 'cat-shakes', name: 'THICK & CREAMY SHAKES', order: 11 },
-  { id: 'cat-mojitos', name: 'IN HOUSE MOJITOS', order: 12 },
-  { id: 'cat-drinks', name: 'DRINKS', order: 13 },
+  { id: 'cat-crraver-sides', name: 'CRRAVER SIDES', order: 9 },
+  { id: 'cat-sides', name: 'SIDES', order: 10 },
+  { id: 'cat-sauces', name: 'SAUCES', order: 11 },
+  { id: 'cat-shakes', name: 'THICK & CREAMY SHAKES', order: 12 },
+  { id: 'cat-mojitos', name: 'IN HOUSE MOJITOS', order: 13 },
+  { id: 'cat-drinks', name: 'DRINKS', order: 14 },
 ];
 
 export const CRRAVE_MENU_ITEMS: CrraveMenuItemData[] = [
@@ -547,60 +549,87 @@ export const CRRAVE_MENU_ITEMS: CrraveMenuItemData[] = [
     order: 7,
     available: true,
   },
+  // ==========================================
+  // CRRAVER SIDES
+  // ==========================================
   {
-    id: 'side-loaded-fries-tots',
-    name: 'Loaded Fries/Tots',
+    id: 'crraver-loaded-fries',
+    name: 'Loaded Fries',
     price: 6.95,
-    category: 'SIDES',
-    description: 'Choice of fries or tots, topped with your choice of grilled chicken, beef or crispy chicken.',
-    order: 8,
+    category: 'CRRAVER SIDES',
+    description: 'Malted cheese, jalapeños, crispy onion, chives with choice of sauce (garlic, chilli, burger, mayonnaise, house sauce) and a choice of protein (grill chicken, beef, crispy chicken).',
+    order: 0,
     available: true,
+    image: '/assets/aistudio/Capture2_adcb43b5.JPG',
+    heroImage: '/assets/aistudio/Capture2_adcb43b5.JPG',
     customizationType: 'loaded-fries',
   },
   {
-    id: 'side-cheese-fries-tots',
-    name: 'Cheese Fries/Tots',
-    price: 4.95,
-    category: 'SIDES',
-    description: 'Choice of fries or potato tots.',
-    order: 9,
+    id: 'crraver-loaded-tots',
+    name: 'Loaded Tots',
+    price: 6.95,
+    category: 'CRRAVER SIDES',
+    description: 'Malted cheese, jalapeños, crispy onion, chives with choice of sauce (garlic, chilli, burger, mayonnaise, house sauce) and a choice of protein (grill chicken, beef, crispy chicken).',
+    order: 1,
     available: true,
-    customizationType: 'cheese-fries-tots',
+    image: '/assets/aistudio/Capture2_adcb43b5.JPG',
+    heroImage: '/assets/aistudio/Capture2_adcb43b5.JPG',
+    customizationType: 'loaded-fries',
   },
   {
-    id: 'side-truffle-fries',
-    name: 'Truffle Fries',
+    id: 'crraver-house-fries-tots',
+    name: 'House Fries/Tots',
     price: 4.95,
-    category: 'SIDES',
-    description: '',
-    order: 10,
+    category: 'CRRAVER SIDES',
+    description: 'Skin-on fries generously topped with house sauce and chives.',
+    order: 2,
     available: true,
+    image: '/assets/aistudio/Capture5_76b04be5.JPG',
+    heroImage: '/assets/aistudio/Capture5_76b04be5.JPG',
+    customizationType: 'fries-or-tots',
   },
   {
-    id: 'side-garlic-mayo-cheese-fries',
-    name: 'Garlic Mayo Cheese Fries',
+    id: 'crraver-truffle-fries-tots',
+    name: 'Truffle Fries/Tots',
+    price: 4.95,
+    category: 'CRRAVER SIDES',
+    description: 'Skin-on fries generously topped with house sauce and chives.',
+    order: 3,
+    available: true,
+    image: '/assets/aistudio/Capture5_76b04be5.JPG',
+    heroImage: '/assets/aistudio/Capture5_76b04be5.JPG',
+    customizationType: 'fries-or-tots',
+  },
+  {
+    id: 'crraver-garlic-mayo-cheese-fries-tots',
+    name: 'Garlic Mayo Cheese Fries/Tots',
     price: 5.50,
-    category: 'SIDES',
-    description: 'Garlic mayo and melted cheese over fries.',
-    order: 11,
+    category: 'CRRAVER SIDES',
+    description: 'Malted cheese, skin-on fries generously topped with garlic...',
+    order: 4,
     available: true,
+    image: '/assets/aistudio/Capture5_76b04be5.JPG',
+    heroImage: '/assets/aistudio/Capture5_76b04be5.JPG',
+    customizationType: 'fries-or-tots',
   },
   {
-    id: 'side-masala-fries',
+    id: 'crraver-masala-fries',
     name: 'Masala Fries',
     price: 4.95,
-    category: 'SIDES',
-    description: '',
-    order: 12,
+    category: 'CRRAVER SIDES',
+    description: 'Dripped in spicy sauce, onion and chives.',
+    order: 5,
     available: true,
+    image: '/assets/aistudio/Capture2_adcb43b5.JPG',
+    heroImage: '/assets/aistudio/Capture2_adcb43b5.JPG',
   },
   {
-    id: 'side-homemade-coleslaw',
+    id: 'crraver-homemade-coleslaw',
     name: 'Homemade Coleslaw',
     price: 2.95,
-    category: 'SIDES',
-    description: '',
-    order: 13,
+    category: 'CRRAVER SIDES',
+    description: 'Fresh homemade coleslaw.',
+    order: 6,
     available: true,
   },
 
@@ -904,6 +933,10 @@ export const SOFT_DRINK_CHOICES = [
   'Mirinda',
   'Rubicon',
   'Water Still',
+];
+
+export const KIDS_DRINK_CHOICES = [
+  'Fruit Shoot',
 ];
 
 export const PERI_PERI_FLAVOURS = [

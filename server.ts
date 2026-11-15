@@ -39,11 +39,11 @@ let stripe: Stripe | null = null;
 
 function getStripe() {
   if (!stripe) {
-    const key = process.env.STRIPE_SECRET_KEY;
+    const key = process.env.STRIPE_SECRET_KEY || process.env.STRIPE_SK || process.env.STRIPE_API_KEY || process.env.VITE_STRIPE_SECRET_KEY || process.env.VITE_STRIPE_SK || process.env.NETLIFY_STRIPE_SECRET_KEY;
     if (!key) {
       throw new Error("STRIPE_SECRET_KEY environment variable is required");
     }
-    stripe = new Stripe(key, {
+    stripe = new Stripe(key.trim(), {
       apiVersion: "2025-01-27.acacia" as any,
     });
   }
@@ -54,7 +54,7 @@ function getStripe() {
 const pendingOrdersCache = new Map<string, any>();
 
 // In-flight concurrency lock to prevent duplicate simultaneous order writes for the same payment
-const inFlightPaymentConfirmations = new Map<string, Promise<string>>();
+const inFlightPaymentConfirmations = new Map<string, Promise<{ success: boolean; orderId: string | null; paymentStatus: string; message?: string }>>();
 
 // In-memory cache for sent email notifications to guarantee instantaneous idempotency
 const sentNotificationsCache = new Map<string, { status: string; provider: string; messageId: string; timestamp: number }>();
@@ -208,9 +208,43 @@ async function saveOrderToFirestore(orderData: any, paymentIntentId?: string) {
   return customDocId;
 }
 
-// Automatic duplicate detector for server records (read-only on server)
+// Automatic duplicate detector for server records
 async function cleanupDuplicateOrders() {
   return [];
+}
+
+// Purge any synthetic or bogus Customer (Apple Pay) orders
+async function purgeBogusOrders(): Promise<number> {
+  try {
+    const db = await getServerDb();
+    if (!db) return 0;
+    const snap = await getDocs(collection(db, "orders"));
+    let purged = 0;
+    for (const d of snap.docs) {
+      const data = d.data();
+      const cName = String(data.customerName || "").toLowerCase();
+      const items = Array.isArray(data.items) ? data.items : [];
+      const hasBogusItem = items.some((i: any) =>
+        String(i?.name || "").toLowerCase().includes("online order (paid via stripe") ||
+        String(i?.name || "").toLowerCase().includes("online order (apple pay")
+      );
+      if (
+        cName.includes("customer (apple pay)") ||
+        (cName === "customer" && hasBogusItem) ||
+        (data.phone === "07000000000" && hasBogusItem)
+      ) {
+        await deleteDoc(d.ref);
+        purged++;
+      }
+    }
+    if (purged > 0) {
+      console.log(`[CLEANUP] Purged ${purged} bogus Customer (Apple Pay) test orders from Firestore.`);
+    }
+    return purged;
+  } catch (err) {
+    console.warn("[CLEANUP] Error purging bogus orders:", err);
+    return 0;
+  }
 }
 
 async function startServer() {
@@ -607,7 +641,7 @@ async function startServer() {
         } catch (smtpErr: any) {
           console.error("[TEST EMAIL] SMTP fallback failed:", smtpErr.message);
           const isOauthPending = cfError?.message && (cfError.message.includes("No OAuth tokens") || cfError.message.includes("/oauth/login"));
-          return res.status(200).json({
+          return res.status(502).json({
             success: false,
             error: cfError ? `Cloudflare Worker: ${cfError.message}; SMTP: ${smtpErr.message}` : smtpErr.message,
             oauthRequired: isOauthPending,
@@ -630,7 +664,7 @@ async function startServer() {
     } catch (err: any) {
       console.error("[TEST EMAIL ERROR]:", err);
       const isOauthPending = err.message && (err.message.includes("No OAuth tokens") || err.message.includes("/oauth/login"));
-      return res.status(200).json({ 
+      return res.status(502).json({ 
         success: false, 
         error: err.message || "Test email delivery failed",
         oauthRequired: isOauthPending,
@@ -899,6 +933,23 @@ async function startServer() {
     }
   });
 
+  // Apple Pay Domain Association File for Stripe
+  app.get("/.well-known/apple-developer-merchantid-domain-association", (req, res) => {
+    res.setHeader("Content-Type", "text/plain");
+    const filePath = path.resolve(process.cwd(), "public/.well-known/apple-developer-merchantid-domain-association");
+    res.sendFile(filePath);
+  });
+
+  // Stripe Client Config Route
+  app.get("/api/stripe-config", (req, res) => {
+    const publishableKey = (process.env.VITE_STRIPE_PUBLISHABLE_KEY || process.env.STRIPE_PUBLISHABLE_KEY || process.env.STRIPE_PK || process.env.STRIPE_PUBLIC_KEY || "").trim();
+    const hasSecretKey = !!(process.env.STRIPE_SECRET_KEY || process.env.STRIPE_SK || process.env.STRIPE_API_KEY);
+    res.json({
+      publishableKey,
+      hasSecretKey,
+    });
+  });
+
   // Stripe Payment Intent Route with complete Order Metadata
   app.post("/api/create-payment-intent", async (req, res) => {
     console.log("Received payment intent request:", req.body);
@@ -969,11 +1020,77 @@ async function startServer() {
 
       res.json({ 
         clientSecret: paymentIntent.client_secret,
-        paymentIntentId: paymentIntent.id
+        paymentIntentId: paymentIntent.id,
+        publishableKey: (process.env.VITE_STRIPE_PUBLISHABLE_KEY || process.env.STRIPE_PUBLISHABLE_KEY || process.env.STRIPE_PK || process.env.STRIPE_PUBLIC_KEY || "").trim()
       });
     } catch (error: any) {
       console.error("Stripe Error:", error);
       res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Direct Order Creation Endpoint (Ensures Orders are reliably saved to Firestore via Server)
+  app.post("/api/create-order", async (req, res) => {
+    try {
+      const { orderData, orderId } = req.body;
+      if (!orderData || !orderData.items || orderData.items.length === 0) {
+        return res.status(400).json({ error: "Invalid order data or empty cart" });
+      }
+
+      const db = await getServerDb();
+      if (!db) {
+        return res.status(500).json({ error: "Database unavailable on server" });
+      }
+
+      const finalOrderId = orderId || orderData.clientOrderId || `crrave_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+      const docRef = doc(db, "orders", finalOrderId);
+
+      const isCollection = orderData.orderType === "collection" || orderData.type === "collection";
+      const formattedAddress = !isCollection && orderData.address
+        ? orderData.address
+        : !isCollection
+          ? `${orderData.houseNumber ? orderData.houseNumber.trim() + " " : ""}${orderData.houseName ? orderData.houseName.trim() + "\n" : ""}${orderData.streetName ? orderData.streetName.trim() : ""}\n${orderData.areaName ? orderData.areaName.trim() : ""}\n${orderData.postcode ? orderData.postcode.trim() : ""}`.trim()
+          : "";
+
+      const docData = {
+        restaurantId: "crrave_leyton",
+        brand: "crrave",
+        userId: orderData.userId || "guest_" + Date.now(),
+        customerName: (orderData.customerName || "Customer").trim(),
+        email: (orderData.email || "").trim(),
+        items: Array.isArray(orderData.items) ? orderData.items : [],
+        subtotal: Number(orderData.subtotal) || Number(orderData.total) || 0,
+        discountAmount: Number(orderData.discountAmount) || 0,
+        discountPercentage: Number(orderData.discountPercentage) || 0,
+        stampCardDiscount: Number(orderData.stampCardDiscount) || 0,
+        stampCardPercentage: Number(orderData.stampCardPercentage) || 0,
+        stampCardApplied: Boolean(orderData.stampCardApplied),
+        deliveryFee: isCollection ? 0 : (Number(orderData.deliveryFee) || 0),
+        distance: isCollection ? null : (orderData.distance || null),
+        total: Number(orderData.total) || 0,
+        status: "pending",
+        type: isCollection ? "collection" : "delivery",
+        phone: (orderData.phone || "").trim(),
+        address: isCollection ? "" : formattedAddress,
+        houseNumber: isCollection ? "" : (orderData.houseNumber || "").trim(),
+        houseName: isCollection ? "" : (orderData.houseName || "").trim(),
+        streetName: isCollection ? "" : (orderData.streetName || "").trim(),
+        areaName: isCollection ? "" : (orderData.areaName || "").trim(),
+        postcode: isCollection ? "" : (orderData.postcode || "").trim(),
+        timeSlot: orderData.selectedTimeSlot || orderData.timeSlot || "ASAP",
+        paymentMethod: orderData.paymentMethod || "cash",
+        paymentId: orderData.paymentId || null,
+        notes: (orderData.orderNotes || orderData.notes || "").trim(),
+        estimate: "",
+        createdAt: serverTimestamp(),
+      };
+
+      await setDoc(docRef, docData, { merge: true });
+      console.log(`[ORDER CREATED VIA API] Successfully saved order doc ${finalOrderId}`);
+      return res.json({ success: true, orderId: finalOrderId });
+    } catch (err: any) {
+      console.error("[CREATE ORDER API ERROR]:", err);
+      return res.status(500).json({ error: err.message || "Failed to create order" });
     }
   });
 
@@ -997,23 +1114,30 @@ async function startServer() {
       // Check if there is already an in-flight confirmation for this payment
       if (inFlightPaymentConfirmations.has(cleanPiId)) {
         console.log(`[CONCURRENCY] Awaiting in-flight confirmation for ${cleanPiId}`);
-        const existingOrderId = await inFlightPaymentConfirmations.get(cleanPiId)!;
-        return res.json({
-          success: true,
-          orderId: existingOrderId,
-          paymentStatus: "succeeded",
-        });
+        const existingResult = await inFlightPaymentConfirmations.get(cleanPiId)!;
+        return res.json(existingResult);
       }
 
       // Create new confirmation promise and register in map
       const confirmationPromise = (async () => {
         const paymentIntent = await stripeClient.paymentIntents.retrieve(cleanPiId);
         if (!paymentIntent) {
-          throw new Error("Payment Intent not found");
+          return {
+            success: false,
+            orderId: null,
+            paymentStatus: "not_found",
+            message: "Payment Intent not found",
+          };
         }
 
         if (paymentIntent.status !== "succeeded" && paymentIntent.status !== "processing") {
-          throw new Error(`Payment has not succeeded. Current status: ${paymentIntent.status}`);
+          console.log(`[PAYMENT VERIFY] ${cleanPiId} status is ${paymentIntent.status} (payment not completed yet)`);
+          return {
+            success: false,
+            orderId: null,
+            paymentStatus: paymentIntent.status,
+            message: `Payment status is ${paymentIntent.status}`,
+          };
         }
 
         // Reconstruct order data
@@ -1039,19 +1163,19 @@ async function startServer() {
         };
 
         const createdId = await saveOrderToFirestore(effectiveOrderData, cleanPiId);
-        return createdId || cleanPiId;
+        return {
+          success: true,
+          orderId: createdId || cleanPiId,
+          paymentStatus: paymentIntent.status || "succeeded",
+        };
       })();
 
       inFlightPaymentConfirmations.set(cleanPiId, confirmationPromise);
 
-      const orderId = await confirmationPromise;
+      const result = await confirmationPromise;
       setTimeout(() => inFlightPaymentConfirmations.delete(cleanPiId), 5000);
 
-      res.json({
-        success: true,
-        orderId,
-        paymentStatus: "succeeded"
-      });
+      res.json(result);
     } catch (error: any) {
       console.error("Error confirming order payment:", error);
       res.status(500).json({ error: error.message || "Failed to confirm payment" });
@@ -1070,26 +1194,31 @@ async function startServer() {
           console.log(`[STRIPE WEBHOOK] Payment succeeded for ${paymentIntent.id}, amount: £${paymentIntent.amount / 100}`);
           
           const cached = pendingOrdersCache.get(paymentIntent.id);
-          const orderData = cached || {
-            customerName: paymentIntent.metadata?.customerName || "Customer",
-            email: paymentIntent.metadata?.email || "",
-            phone: paymentIntent.metadata?.phone || "",
-            orderType: paymentIntent.metadata?.orderType || "delivery",
-            address: paymentIntent.metadata?.address || "",
-            postcode: paymentIntent.metadata?.postcode || "",
-            selectedTimeSlot: paymentIntent.metadata?.timeSlot || "ASAP",
-            orderNotes: paymentIntent.metadata?.notes || "",
-            total: paymentIntent.amount / 100,
-            deliveryFee: Number(paymentIntent.metadata?.deliveryFee) || 0,
-            discountAmount: Number(paymentIntent.metadata?.discountAmount) || 0,
-            items: paymentIntent.metadata?.itemsSummary ? [
-              { name: paymentIntent.metadata.itemsSummary, price: paymentIntent.amount / 100, quantity: 1 }
-            ] : [
-              { name: "Online Order (Apple Pay / Card)", price: paymentIntent.amount / 100, quantity: 1 }
-            ]
-          };
-
-          await saveOrderToFirestore(orderData, paymentIntent.id);
+          if (cached) {
+            await saveOrderToFirestore(cached, paymentIntent.id);
+          } else if (paymentIntent.metadata?.customerName && paymentIntent.metadata.customerName !== "Customer (Apple Pay)") {
+            const orderData = {
+              customerName: paymentIntent.metadata.customerName,
+              email: paymentIntent.metadata.email || "",
+              phone: paymentIntent.metadata.phone || "",
+              orderType: paymentIntent.metadata.orderType || "delivery",
+              address: paymentIntent.metadata.address || "",
+              postcode: paymentIntent.metadata.postcode || "",
+              selectedTimeSlot: paymentIntent.metadata.timeSlot || "ASAP",
+              orderNotes: paymentIntent.metadata.notes || "",
+              total: paymentIntent.amount / 100,
+              deliveryFee: Number(paymentIntent.metadata.deliveryFee) || 0,
+              discountAmount: Number(paymentIntent.metadata.discountAmount) || 0,
+              items: paymentIntent.metadata.itemsSummary ? [
+                { name: paymentIntent.metadata.itemsSummary, price: paymentIntent.amount / 100, quantity: 1 }
+              ] : [
+                { name: "Online Order", price: paymentIntent.amount / 100, quantity: 1 }
+              ]
+            };
+            await saveOrderToFirestore(orderData, paymentIntent.id);
+          } else {
+            console.log(`[STRIPE WEBHOOK] Skipped unassociated payment intent ${paymentIntent.id}`);
+          }
         }
       }
 
@@ -1114,92 +1243,21 @@ async function startServer() {
     }
   });
 
-  // Admin Recovery Endpoint to scan recent Stripe payments and ensure all are in Firestore
+  // Admin Endpoint to clean up any bogus or duplicate orders
   app.all(["/api/recover-missing-stripe-orders", "/api/sync-stripe-orders"], async (req, res) => {
     try {
-      if (!process.env.STRIPE_SECRET_KEY) {
-        console.log("[RECOVERY] STRIPE_SECRET_KEY not set - skipping Stripe recovery scan.");
-        return res.json({
-          success: true,
-          skipped: true,
-          message: "STRIPE_SECRET_KEY is not configured.",
-          checkedCount: 0,
-          recoveredCount: 0,
-          recoveredOrders: []
-        });
-      }
-
-      const stripeClient = getStripe();
-      const db = await getServerDb();
-      if (!db) {
-        return res.status(500).json({ error: "Firestore not initialized on server" });
-      }
-
-      console.log("[RECOVERY] Scanning recent Stripe payments for missing orders...");
-      
-      // First clean up any existing duplicate records
+      const purged = await purgeBogusOrders();
       await cleanupDuplicateOrders();
-
-      // Fetch latest succeeded payments from Stripe
-      const payments = await stripeClient.paymentIntents.list({
-        limit: 50,
-      });
-
-      const recoveredOrders: any[] = [];
-      const succeededPayments = payments.data.filter(p => p.status === "succeeded");
-
-      for (const pi of succeededPayments) {
-        // Check if order exists in Firestore by ID or paymentId field
-        const directSnap = await getDoc(doc(db, "orders", pi.id));
-        if (!directSnap.exists()) {
-          const existingQ = query(collection(db, "orders"), where("paymentId", "==", pi.id));
-          const existingSnap = await getDocs(existingQ);
-
-          if (existingSnap.empty) {
-            console.log(`[RECOVERY] Found missing order for payment ${pi.id} (Amount: £${pi.amount / 100})! Reconstructing...`);
-            
-            const cached = pendingOrdersCache.get(pi.id);
-            const orderData = cached || {
-              customerName: pi.metadata?.customerName || "Customer (Apple Pay)",
-              email: pi.metadata?.email || "",
-              phone: pi.metadata?.phone || "07000000000",
-              orderType: pi.metadata?.orderType || "delivery",
-              address: pi.metadata?.address || "",
-              postcode: pi.metadata?.postcode || "",
-              selectedTimeSlot: pi.metadata?.timeSlot || "ASAP",
-              orderNotes: pi.metadata?.notes || "",
-              total: pi.amount / 100,
-              deliveryFee: Number(pi.metadata?.deliveryFee) || 0,
-              discountAmount: Number(pi.metadata?.discountAmount) || 0,
-              items: pi.metadata?.itemsSummary ? [
-                { name: pi.metadata.itemsSummary, price: pi.amount / 100, quantity: 1 }
-              ] : [
-                { name: `Online Order (Paid via Stripe/Apple Pay £${(pi.amount / 100).toFixed(2)})`, price: pi.amount / 100, quantity: 1 }
-              ]
-            };
-
-            const docId = await saveOrderToFirestore(orderData, pi.id);
-            recoveredOrders.push({
-              id: docId,
-              paymentId: pi.id,
-              amount: pi.amount / 100,
-              customerName: orderData.customerName,
-              createdAt: new Date(pi.created * 1000).toISOString()
-            });
-          }
-        }
-      }
-
-      console.log(`[RECOVERY] Scan complete. Recovered ${recoveredOrders.length} missing order(s).`);
       res.json({
         success: true,
-        checkedCount: succeededPayments.length,
-        recoveredCount: recoveredOrders.length,
-        recoveredOrders
+        message: "Stripe auto-fabrication disabled. Database cleaned.",
+        purgedCount: purged,
+        recoveredCount: 0,
+        recoveredOrders: []
       });
     } catch (error: any) {
-      console.error("Error during Stripe recovery scan:", error);
-      res.status(500).json({ error: error.message || "Failed to scan Stripe payments" });
+      console.error("Error during cleanup:", error);
+      res.status(500).json({ error: error.message || "Failed to clean orders" });
     }
   });
 
@@ -1220,6 +1278,7 @@ async function startServer() {
 
   app.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on http://localhost:${PORT}`);
+    purgeBogusOrders().catch((err) => console.warn("Initial purge error:", err));
   });
 }
 
