@@ -4,6 +4,10 @@ const fs = require("fs");
 const http = require("http");
 const os = require("os");
 
+app.commandLine.appendSwitch("disable-backgrounding-occluded-windows");
+app.commandLine.appendSwitch("disable-renderer-backgrounding");
+app.commandLine.appendSwitch("disable-features", "CalculateNativeWinOcclusion");
+
 const MIME_TYPES = {
   ".html": "text/html; charset=utf-8",
   ".js": "application/javascript; charset=utf-8",
@@ -110,8 +114,44 @@ function startDistServer() {
   });
 }
 
+function wrapCopyAsStandaloneHtml(html) {
+  if (!html || typeof html !== "string") return "";
+  if (/<html[\s>]/i.test(html)) {
+    return html;
+  }
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Receipt Print</title>
+  <style>
+    @page {
+      margin: 0;
+    }
+    * {
+      -webkit-print-color-adjust: exact !important;
+      print-color-adjust: exact !important;
+    }
+    html, body {
+      margin: 0 !important;
+      padding: 0 !important;
+      width: 80mm !important;
+      background: #ffffff !important;
+      color: #000000 !important;
+      font-family: Arial, Helvetica, sans-serif;
+    }
+  </style>
+</head>
+<body>
+  ${html}
+</body>
+</html>`;
+}
+
 async function printHtmlSilently(html, options = {}) {
-  if (!html || typeof html !== "string") {
+  const standaloneHtml = wrapCopyAsStandaloneHtml(html);
+  if (!standaloneHtml) {
     throw new Error("No HTML content provided for printing.");
   }
 
@@ -120,18 +160,26 @@ async function printHtmlSilently(html, options = {}) {
     .slice(2, 8)}.html`;
   const tempFilePath = path.join(os.tmpdir(), tempFileName);
 
-  fs.writeFileSync(tempFilePath, html, "utf8");
+  fs.writeFileSync(tempFilePath, standaloneHtml, "utf8");
 
   return new Promise((resolve, reject) => {
     const printWin = new BrowserWindow({
-      show: false,
-      width: 340,
-      height: 800,
+      show: true,
+      x: -20000,
+      y: -20000,
+      width: 302,
+      height: 900,
+      frame: false,
+      skipTaskbar: true,
+      focusable: false,
+      enableLargerThanScreen: true,
+      paintWhenInitiallyHidden: true,
       backgroundColor: "#ffffff",
       webPreferences: {
         nodeIntegration: false,
         contextIsolation: true,
         sandbox: false,
+        backgroundThrottling: false,
       },
     });
 
@@ -171,21 +219,38 @@ async function printHtmlSilently(html, options = {}) {
 
     const timeoutHandle = setTimeout(() => {
       fail(new Error("Thermal print timed out."));
-    }, 20000);
+    }, 25000);
 
     printWin.webContents.once("did-fail-load", (_event, _code, desc) => {
       fail(new Error(`Failed to load receipt document: ${desc}`));
     });
 
-    printWin.webContents.once("did-finish-load", () => {
-      setTimeout(() => {
+    printWin.webContents.once("did-finish-load", async () => {
+      try {
         if (settled || printWin.isDestroyed()) return;
 
-        const printOptions = {
-          silent: options.silent !== false,
-          printBackground: options.printBackground !== false,
-          margins: options.margins || { marginType: "none" },
-        };
+        const metrics = await printWin.webContents.executeJavaScript(`
+          (async () => {
+            if (document.fonts && document.fonts.ready) {
+              await document.fonts.ready;
+            }
+            await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+            const body = document.body;
+            const docEl = document.documentElement;
+            const heightPx = Math.max(
+              body ? body.scrollHeight : 0,
+              body ? body.offsetHeight : 0,
+              docEl ? docEl.scrollHeight : 0
+            );
+            return { heightPx };
+          })()
+        `);
+
+        if (settled || printWin.isDestroyed()) return;
+
+        const heightPx = Number(metrics?.heightPx || 450);
+        // 1 CSS px = 25400 / 96 = 264.5833 microns; add 6mm bottom buffer
+        const heightMicrons = Math.max(60000, Math.ceil(heightPx * 264.5833) + 6000);
 
         const printerName =
           typeof options.deviceName === "string"
@@ -194,18 +259,53 @@ async function printHtmlSilently(html, options = {}) {
             ? options.printerName.trim()
             : "";
 
+        const basePrintOptions = {
+          silent: options.silent !== false,
+          printBackground: true,
+          color: false,
+          margins: options.margins || { marginType: "none" },
+        };
+
         if (printerName) {
-          printOptions.deviceName = printerName;
+          basePrintOptions.deviceName = printerName;
         }
 
-        printWin.webContents.print(printOptions, (success, failureReason) => {
-          if (!success) {
+        const primaryOptions = {
+          ...basePrintOptions,
+          pageSize: {
+            width: 80000,
+            height: heightMicrons,
+          },
+        };
+
+        printWin.webContents.print(primaryOptions, (success, failureReason) => {
+          if (success) {
+            succeed({ success: true, deviceName: printerName || "default" });
+            return;
+          }
+
+          // Fallback to Windows printer driver's default paper size if custom pageSize rejected
+          if (settled || printWin.isDestroyed()) {
             fail(new Error(failureReason || "Printer rejected or cancelled the print job."));
             return;
           }
-          succeed({ success: true, deviceName: printerName || "default" });
+
+          const fallbackOptions = {
+            ...basePrintOptions,
+            usePrinterDefaultPageSize: true,
+          };
+
+          printWin.webContents.print(fallbackOptions, (fbSuccess, fbReason) => {
+            if (!fbSuccess) {
+              fail(new Error(fbReason || failureReason || "Printer rejected or cancelled the print job."));
+              return;
+            }
+            succeed({ success: true, deviceName: printerName || "default" });
+          });
         });
-      }, 100);
+      } catch (err) {
+        fail(err);
+      }
     });
 
     printWin.loadFile(tempFilePath).catch(fail);
@@ -214,6 +314,19 @@ async function printHtmlSilently(html, options = {}) {
 
 function registerIpcHandlers() {
   ipcMain.handle("print-receipt", async (_event, payload = {}) => {
+    const printerName = payload.printerName || payload.deviceName;
+    const baseOpts = {
+      silent: true,
+      printBackground: true,
+      deviceName: printerName,
+      margins: { marginType: "none" },
+    };
+
+    if (payload.customerHtml && payload.kitchenHtml) {
+      await printHtmlSilently(payload.customerHtml, baseOpts);
+      return printHtmlSilently(payload.kitchenHtml, baseOpts);
+    }
+
     const html =
       payload.combinedHtml ||
       payload.html ||
@@ -224,12 +337,7 @@ function registerIpcHandlers() {
       throw new Error("Receipt payload does not include printable HTML.");
     }
 
-    return printHtmlSilently(html, {
-      silent: true,
-      printBackground: true,
-      deviceName: payload.printerName || payload.deviceName,
-      margins: { marginType: "none" },
-    });
+    return printHtmlSilently(html, baseOpts);
   });
 
   ipcMain.handle("print-html", async (_event, payload = {}) => {
@@ -298,6 +406,9 @@ if (!gotSingleInstanceLock) {
 
   app.whenReady().then(async () => {
     registerIpcHandlers();
+    if (!process.env.ELECTRON_START_URL && !serverUrl) {
+      await startDistServer();
+    }
     await createMainWindow();
 
     app.on("activate", async () => {

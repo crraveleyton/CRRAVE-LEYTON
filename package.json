@@ -66,6 +66,7 @@
     "appId": "com.biznexttechnology.crraveleyton",
     "productName": "Crrave Leyton",
     "copyright": "Copyright © 2026 Biznext Technology Ltd",
+    "compression": "normal",
     "directories": {
       "output": "release",
       "buildResources": "electron/resources"

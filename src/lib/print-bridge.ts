@@ -115,8 +115,11 @@ export function wrapStandalonePrintDocument(sectionsHtml: string[]): string {
   <title>Receipt Print</title>
   <style>
     @page {
-      size: 80mm auto;
       margin: 0;
+    }
+    * {
+      -webkit-print-color-adjust: exact !important;
+      print-color-adjust: exact !important;
     }
     html, body {
       margin: 0;
@@ -125,8 +128,6 @@ export function wrapStandalonePrintDocument(sectionsHtml: string[]): string {
       background: #ffffff !important;
       color: #000000 !important;
       font-family: Arial, Helvetica, sans-serif;
-      -webkit-print-color-adjust: exact;
-      print-color-adjust: exact;
     }
     .print-copy-page {
       width: 80mm;
@@ -138,6 +139,15 @@ export function wrapStandalonePrintDocument(sectionsHtml: string[]): string {
     .with-cut-break {
       page-break-after: always;
       break-after: page;
+    }
+    @media print {
+      html, body {
+        width: 80mm !important;
+        margin: 0 !important;
+        padding: 0 !important;
+        background: #ffffff !important;
+        color: #000000 !important;
+      }
     }
     @media screen {
       html, body {

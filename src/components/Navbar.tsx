@@ -5,6 +5,7 @@ import { ShoppingCart, User, LogOut, Menu as MenuIcon, Shield, Sparkles } from '
 import { toast } from 'sonner';
 import { cn } from '../lib/utils';
 import { motion } from 'motion/react';
+import { isElectronEnvironment } from '../lib/print-bridge';
 
 interface NavbarProps {
   user: UserProfile | null;
@@ -28,6 +29,7 @@ export default function Navbar({
   setAuthModalOpen
 }: NavbarProps) {
   const [isLoggingIn, setIsLoggingIn] = useState(false);
+  const isElectronApp = isElectronEnvironment();
 
   useEffect(() => {
     const checkHash = () => {
@@ -69,19 +71,21 @@ export default function Navbar({
         <div className="flex justify-between items-center h-20">
           <div className="flex items-center gap-8">
             <button 
-              onClick={() => setView('home')}
+              onClick={() => setView(isElectronApp ? 'admin' : 'home')}
               className="flex items-center gap-2 text-xl font-bold tracking-tighter text-orange-500 shrink-0"
             >
               <img src="/logo.png" alt="Crrave Leyton" className="h-10 w-10 sm:h-11 sm:w-11 rounded-full object-cover border border-orange-500/50 shadow-md shadow-orange-500/20" />
               <span className="hidden sm:inline">CRRAVE LEYTON</span>
             </button>
             <div className="flex items-center gap-4 sm:gap-6">
-              <button 
-                onClick={() => setView('menu')}
-                className={`text-[10px] sm:text-sm font-bold tracking-widest transition-colors hover:text-orange-500 ${currentView === 'menu' ? 'text-orange-500' : 'text-gray-400'}`}
-              >
-                MENU
-              </button>
+              {!isElectronApp && currentView !== 'admin' && (
+                <button 
+                  onClick={() => setView('menu')}
+                  className={`text-[10px] sm:text-sm font-bold tracking-widest transition-colors hover:text-orange-500 ${currentView === 'menu' ? 'text-orange-500' : 'text-gray-400'}`}
+                >
+                  MENU
+                </button>
+              )}
               {user && user.role !== 'admin' && (
                 <button 
                   onClick={() => setView('orders')}
@@ -129,7 +133,14 @@ export default function Navbar({
               </motion.button>
             )}
 
-            {user ? (
+            {isElectronApp ? (
+              <div className="flex items-center gap-2 sm:gap-4">
+                <div className="hidden md:flex flex-col items-end">
+                  <span className="text-xs font-medium text-white">Crrave Leyton Admin</span>
+                  <span className="text-[10px] text-orange-400 uppercase tracking-widest font-bold">ADMIN</span>
+                </div>
+              </div>
+            ) : user ? (
               <div className="flex items-center gap-2 sm:gap-4">
                 {user.role !== 'admin' && !user.isGuest && (
                   <button

@@ -39,10 +39,22 @@ export interface CartItem {
 }
 
 export default function App() {
-  const [user, setUser] = useState<UserProfile | null>(null);
-  const [loading, setLoading] = useState(true);
+  const isElectronInitial = isElectronEnvironment();
+  const [user, setUser] = useState<UserProfile | null>(() =>
+    isElectronInitial
+      ? {
+          uid: 'electron-admin',
+          name: 'Crrave Leyton Admin',
+          email: 'crraveleyton@gmail.com',
+          role: 'admin',
+          isGuest: false,
+          stamps: 0,
+        }
+      : null
+  );
+  const [loading, setLoading] = useState(() => !isElectronInitial);
   const [view, setView] = useState<'home' | 'menu' | 'orders' | 'admin'>(() =>
-    isElectronEnvironment() ? 'admin' : 'home'
+    isElectronInitial ? 'admin' : 'home'
   );
   const [editingItemId, setEditingItemId] = useState<string | null>(null);
   const [cartOpen, setCartOpen] = useState(false);
@@ -184,7 +196,7 @@ export default function App() {
             email: firebaseUser.email || 'crraveleyton@gmail.com',
             phone: firebaseUser.phoneNumber || '',
             role: 'admin',
-            isGuest: firebaseUser.isAnonymous,
+            isGuest: false,
             stamps: 0,
           });
           setLoading(false);
@@ -202,12 +214,19 @@ export default function App() {
               } catch (updateErr) {
                 console.warn('Could not persist admin role to user doc:', updateErr);
               }
-              setUser({ uid: firebaseUser.uid, ...userData, role: 'admin', stamps: userData.stamps ?? 0 } as UserProfile);
+              setUser({
+                uid: firebaseUser.uid,
+                ...userData,
+                role: 'admin',
+                isGuest: false,
+                stamps: userData.stamps ?? 0,
+              } as UserProfile);
             } else {
               setUser({ 
                 uid: firebaseUser.uid, 
                 ...userData,
                 role: shouldBeAdmin ? 'admin' : userData.role,
+                isGuest: shouldBeAdmin ? false : Boolean(userData.isGuest),
                 phone: userData.phone || firebaseUser.phoneNumber || '',
                 stamps: userData.stamps ?? 0 
               } as UserProfile);
@@ -219,7 +238,7 @@ export default function App() {
               email: firebaseUser.email || (shouldBeAdmin ? 'crraveleyton@gmail.com' : ''),
               phone: firebaseUser.phoneNumber || '',
               role: shouldBeAdmin ? 'admin' : 'customer',
-              isGuest: firebaseUser.isAnonymous,
+              isGuest: shouldBeAdmin ? false : firebaseUser.isAnonymous,
               stamps: 0
             };
             if (!firebaseUser.isAnonymous || shouldBeAdmin) {
@@ -246,7 +265,7 @@ export default function App() {
               name: 'Crrave Leyton Admin',
               email: firebaseUser.email || 'crraveleyton@gmail.com',
               role: 'admin',
-              isGuest: firebaseUser.isAnonymous,
+              isGuest: false,
               stamps: 0,
             });
           }
@@ -265,7 +284,7 @@ export default function App() {
                 name: 'Crrave Leyton Admin',
                 email: 'crraveleyton@gmail.com',
                 role: 'admin',
-                isGuest: true,
+                isGuest: false,
                 stamps: 0,
               });
             } else {
